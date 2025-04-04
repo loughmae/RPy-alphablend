@@ -14,19 +14,56 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 import matplotlib.pyplot as plt
 
-class PlotCanvas(FigureCanvasQTAgg):
+#class PlotCanvas(FigureCanvasQTAgg):
+ #   def __init__(self, parent=None):
+  #      fig = Figure()
+   #     super().__init__(fig)
+    #    self.setParent(parent)
+     #   self.ax = self.figure.add_subplot(111)
+      #  self.figure.tight_layout()
+
+        # Keep a reference to the current colorbar (initially none)
+       # self.cbar = None
+# Enable dragging of the base image
+class DraggableCanvas(FigureCanvasQTAgg):
     def __init__(self, parent=None):
         fig = Figure()
         super().__init__(fig)
         self.setParent(parent)
         self.ax = self.figure.add_subplot(111)
         self.figure.tight_layout()
+        self.dragging = False
+        self.last_mouse_pos = None
+        self.cbar = None  # Keep a reference to the current colorbar
 
-        # Keep a reference to the current colorbar (initially none)
-        self.cbar = None
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.dragging = True
+            self.last_mouse_pos = event.pos()
+
+    def mouseMoveEvent(self, event):
+        if self.dragging:
+            dx = event.pos().x() - self.last_mouse_pos.x()
+            dy = event.pos().y() - self.last_mouse_pos.y()
+
+            # Only move the base image layer
+            for img in self.ax.images:
+                if img.get_array().dtype == np.uint8:  # Base image
+                    extent = img.get_extent()
+                    new_extent = [extent[0] + dx, extent[1] + dx,
+                                  extent[2] + dy, extent[3] + dy]
+                    img.set_extent(new_extent)
+
+            self.last_mouse_pos = event.pos()
+            self.draw()
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.dragging = False
+
 
     def draw_heatmap(self, base_img: QPixmap, intensity_array,
-                     alpha=0.6, cmap='jet', interpolation='bilinear'):
+                     alpha=0.6, cmap='jet', interpolation='bilinear',vmin=None, vmax=None):
         self.ax.clear()
 
         # Remove old colorbar if it exists
@@ -46,7 +83,10 @@ class PlotCanvas(FigureCanvasQTAgg):
         im = self.ax.imshow(intensity_array, cmap=cmap, alpha=alpha,
                        interpolation=interpolation,
                        extent=[0, width, 0, height],
-                       origin='lower')
+                       origin='lower',
+                            vmin=vmin,
+                            vmax=vmax)
+
         self.ax.set_xlim([0, width])
         self.ax.set_ylim([height, 0])
 
@@ -141,7 +181,7 @@ class MainWindow(QMainWindow):
         self.tab_widget.addTab(intensity_tab, "Intensity Data")
 
         # Tab 3: Blended
-        self.plot_canvas = PlotCanvas(self)
+        self.plot_canvas = DraggableCanvas(self)
         self.plot_canvas.setMinimumSize(600, 400)  # Adjust these values as needed
         blend_layout = QVBoxLayout()
         blend_layout.addWidget(self.plot_canvas)
@@ -155,6 +195,10 @@ class MainWindow(QMainWindow):
         btn_contour.clicked.connect(self.show_contours)
         overlay_buttons_layout.addWidget(btn_contour)
         blend_layout.addLayout(overlay_buttons_layout)
+
+        btn_save_blend = QPushButton("Save Blended Image")
+        btn_save_blend.clicked.connect(self.save_blended_image)
+        overlay_buttons_layout.addWidget(btn_save_blend)
 
         # Slider for alpha
         self.alpha_slider = QSlider(Qt.Orientation.Horizontal)
@@ -170,7 +214,7 @@ class MainWindow(QMainWindow):
         self.cmap_combo = QComboBox()
         # Add some standard color maps
         # add in american,european and lower reference colour map?Do this by scaling outputs?Or create colour maps?
-        self.cmap_combo.addItems(["jet", "viridis", "plasma", "inferno", "magma", "cividis"])
+        self.cmap_combo.addItems(["jet", "viridis", "plasma", "inferno", "magma", "cividis","coolwarm", "YlGnBu"])
         self.cmap_combo.setCurrentText("jet")
         self.cmap_combo.currentTextChanged.connect(self.update_cmap)
         blend_layout.addWidget(self.cmap_combo)
@@ -190,12 +234,41 @@ class MainWindow(QMainWindow):
         self.highlight_combo.currentTextChanged.connect(self.update_highlight)
         blend_layout.addWidget(self.highlight_combo)
 
+        # Add sliders for vmin and vmax
+        self.vmin_slider = QSlider(Qt.Orientation.Horizontal)
+        self.vmin_slider.setMinimum(0)
+        self.vmin_slider.setMaximum(100)
+        self.vmin_slider.setValue(0)
+        self.vmin_slider.valueChanged.connect(self.update_colormap_scale)
+
+        self.vmax_slider = QSlider(Qt.Orientation.Horizontal)
+        self.vmax_slider.setMinimum(0)
+        self.vmax_slider.setMaximum(100)
+        self.vmax_slider.setValue(100)
+        self.vmax_slider.valueChanged.connect(self.update_colormap_scale)
+
+        blend_layout.addWidget(QLabel("Min Scale"))
+        blend_layout.addWidget(self.vmin_slider)
+        blend_layout.addWidget(QLabel("Max Scale"))
+        blend_layout.addWidget(self.vmax_slider)
+
+        # Update scale in heatmap rendering
+        def update_colormap_scale(self):
+            vmin = self.vmin_slider.value()
+            vmax = self.vmax_slider.value()
+            intens = self.get_intensity_array()
+            self.plot_canvas.draw_heatmap(self.current_pixmap, intens,
+                                          alpha=self.alpha,
+                                          cmap=self.cmap,
+                                          interpolation='bilinear',
+                                          vmin=vmin, vmax=vmax)
+
         # Tab 4: Grid Overlay
         grid_tab = QWidget()
         grid_layout = QVBoxLayout()
         grid_tab.setLayout(grid_layout)
 
-        self.grid_canvas = PlotCanvas(self)
+        self.grid_canvas = DraggableCanvas(self)
         self.grid_canvas.setMinimumSize(600, 400)
         grid_layout.addWidget(self.grid_canvas)
 
@@ -289,6 +362,20 @@ class MainWindow(QMainWindow):
     def update_cmap(self):
         self.cmap = self.cmap_combo.currentText()
 
+    def update_colormap_scale(self):
+        intens = self.get_intensity_array()
+        data_min = np.min(intens)
+        data_max = np.max(intens)
+
+        # Convert slider percentages to actual data values
+        vmin = data_min + (data_max - data_min) * (self.vmin_slider.value() / 100)
+        vmax = data_min + (data_max - data_min) * (self.vmax_slider.value() / 100)
+
+        self.plot_canvas.draw_heatmap(self.current_pixmap, intens,
+                                      alpha=self.alpha,
+                                      cmap=self.cmap,
+                                      vmin=vmin, vmax=vmax)
+
     def show_heatmap(self):
         if not self.current_pixmap or self.table_widget.rowCount() == 0:
             QMessageBox.warning(self, "Warning", "Load an image and some intensity data first.")
@@ -298,6 +385,29 @@ class MainWindow(QMainWindow):
                                       alpha=self.alpha,
                                       cmap=self.cmap,
                                       interpolation='bilinear')
+
+    def save_blended_image(self):
+        if not self.plot_canvas.figure:
+            return
+
+        file_name, _ = QFileDialog.getSaveFileName(
+            self, "Save Blended Image", "",
+            "PNG Files (*.png);;JPEG Files (*.jpg *.jpeg);;All Files (*)"
+        )
+
+        if file_name:
+            dpi = self.plot_canvas.figure.get_dpi()
+            width = self.current_pixmap.width() / dpi
+            height = self.current_pixmap.height() / dpi
+            self.plot_canvas.figure.set_size_inches(width, height)
+            self.plot_canvas.figure.savefig(
+                file_name,
+                dpi=dpi,
+                bbox_inches='tight',
+                pad_inches=0,
+                transparent=True
+            )
+
 
     def save_grid_image(self):
         if not self.grid_canvas.figure:
