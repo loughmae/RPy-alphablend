@@ -1,3 +1,4 @@
+
 import sys
 import numpy as np
 import pandas as pd
@@ -6,8 +7,8 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget,
     QVBoxLayout, QHBoxLayout, QTabWidget,
     QPushButton, QTableWidget, QTableWidgetItem,
-    QFileDialog, QLabel, QMessageBox, QSlider, QComboBox,
-    QLineEdit, QGroupBox
+    QFileDialog, QLabel, QMessageBox, QComboBox,
+    QLineEdit, QGroupBox, QDoubleSpinBox, QSlider
 )
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtCore import Qt
@@ -15,6 +16,7 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 import matplotlib.pyplot as plt
 import matplotlib.lines as mlines
+
 
 class DraggableCanvas(FigureCanvasQTAgg):
     def __init__(self, parent=None):
@@ -36,9 +38,8 @@ class DraggableCanvas(FigureCanvasQTAgg):
         if self.dragging:
             dx = event.pos().x() - self.last_mouse_pos.x()
             dy = event.pos().y() - self.last_mouse_pos.y()
-            # Only move the base image layer
             for img in self.ax.images:
-                if img.get_array().dtype == np.uint8:  # Base image
+                if img.get_array().dtype == np.uint8:
                     extent = img.get_extent()
                     new_extent = [extent[0] + dx, extent[1] + dx,
                                   extent[2] + dy, extent[3] + dy]
@@ -49,6 +50,7 @@ class DraggableCanvas(FigureCanvasQTAgg):
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             self.dragging = False
+
     def draw_heatmap(self, base_img: QPixmap, intensity_array,
                      alpha=0.6, cmap='jet', interpolation='bilinear',
                      vmin=None, vmax=None, units=''):
@@ -79,7 +81,8 @@ class DraggableCanvas(FigureCanvasQTAgg):
         self.draw()
 
     def draw_contours(self, base_img: QPixmap, intensity_array,
-                      alpha=0.6, cmap='jet', levels=6, interpolation='bilinear', units=''):
+                      alpha=0.6, cmap='jet', levels=6,
+                      interpolation='bilinear', units=''):
         self.ax.clear()
         if self.cbar is not None:
             self.cbar.remove()
@@ -100,7 +103,13 @@ class DraggableCanvas(FigureCanvasQTAgg):
             vmin = np.min(intensity_array)
             vmax = np.max(intensity_array)
             levels = np.linspace(vmin, vmax, levels)
-        cs = self.ax.contourf(xx, yy, intensity_array, levels=levels, cmap=cmap, alpha=alpha)
+        cs = self.ax.contourf(
+            xx, yy, intensity_array,
+            levels=levels,
+            cmap=cmap,
+            alpha=alpha,
+            extend='max'
+        )
         self.ax.set_xlim([0, width])
         self.ax.set_ylim([height, 0])
         self.cbar = self.figure.colorbar(cs, ax=self.ax, orientation='vertical', pad=0.05)
@@ -110,16 +119,25 @@ class DraggableCanvas(FigureCanvasQTAgg):
             self.cbar.set_label('Intensity', rotation=270, labelpad=15)
         self.draw()
 
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Radiation Protection Scatter Map Generator")
-        self.resize(100, 100)  # <--- Set your preferred width and height here
+        self.resize(100, 100)  # Set your preferred width and height here
+
+        # --- Caching for efficiency ---
+        self.last_csv_data = None
+        self.last_csv_shape = None
+        self.last_pixmap_size = None
+        self.cached_intensity_array = None
+
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
         self.tab_widget = QTabWidget()
         main_layout.addWidget(self.tab_widget)
+
         # Tab 1: Image
         self.image_label = QLabel("No Image Loaded")
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -127,14 +145,12 @@ class MainWindow(QMainWindow):
         img_tab_left = QVBoxLayout()
         img_tab_left.addWidget(self.image_label)
         img_tab_layout.addLayout(img_tab_left, stretch=3)
-
         img_tab_right = QVBoxLayout()
         btn_load_img = QPushButton("Load Image")
         btn_load_img.clicked.connect(self.load_image)
         img_tab_right.addWidget(btn_load_img)
         img_tab_right.addStretch(1)
         img_tab_layout.addLayout(img_tab_right, stretch=1)
-
         img_tab = QWidget()
         img_tab.setLayout(img_tab_layout)
         self.tab_widget.addTab(img_tab, "Image")
@@ -142,11 +158,11 @@ class MainWindow(QMainWindow):
         # Tab 2: Intensity Data
         self.table_widget = QTableWidget()
         self.table_widget.setEditTriggers(QTableWidget.EditTrigger.AllEditTriggers)
+        self.table_widget.cellChanged.connect(self.invalidate_cache)  # Efficient cache invalidation
         intensity_layout = QHBoxLayout()
         intensity_left = QVBoxLayout()
         intensity_left.addWidget(self.table_widget)
         intensity_layout.addLayout(intensity_left, stretch=3)
-
         intensity_right = QVBoxLayout()
         btn_load_csv = QPushButton("Load CSV/Excel")
         btn_load_csv.clicked.connect(self.load_csv_excel)
@@ -159,7 +175,6 @@ class MainWindow(QMainWindow):
         intensity_right.addWidget(btn_remove_row)
         intensity_right.addStretch(1)
         intensity_layout.addLayout(intensity_right, stretch=1)
-
         intensity_tab = QWidget()
         intensity_tab.setLayout(intensity_layout)
         self.tab_widget.addTab(intensity_tab, "Intensity Data")
@@ -171,8 +186,8 @@ class MainWindow(QMainWindow):
         blend_left = QVBoxLayout()
         blend_left.addWidget(self.plot_canvas)
         blend_layout.addLayout(blend_left, stretch=3)
-
         blend_right = QVBoxLayout()
+
         # Overlay buttons
         overlay_buttons_layout = QHBoxLayout()
         btn_heatmap = QPushButton("Show Heatmap Overlay")
@@ -204,6 +219,7 @@ class MainWindow(QMainWindow):
         self.cmap_combo.currentTextChanged.connect(self.update_cmap)
         blend_right.addWidget(QLabel("Colormap"))
         blend_right.addWidget(self.cmap_combo)
+
         # Highlight controls
         highlight_group = QGroupBox("Highlight Levels")
         highlight_layout = QVBoxLayout()
@@ -221,21 +237,19 @@ class MainWindow(QMainWindow):
         highlight_group.setLayout(highlight_layout)
         blend_right.addWidget(highlight_group)
 
-        # Colormap scale sliders
-        self.vmin_slider = QSlider(Qt.Orientation.Horizontal)
-        self.vmin_slider.setMinimum(0)
-        self.vmin_slider.setMaximum(100)
-        self.vmin_slider.setValue(0)
-        self.vmin_slider.valueChanged.connect(self.update_colormap_scale)
-        self.vmax_slider = QSlider(Qt.Orientation.Horizontal)
-        self.vmax_slider.setMinimum(0)
-        self.vmax_slider.setMaximum(100)
-        self.vmax_slider.setValue(100)
-        self.vmax_slider.valueChanged.connect(self.update_colormap_scale)
-        blend_right.addWidget(QLabel("Min Scale"))
-        blend_right.addWidget(self.vmin_slider)
-        blend_right.addWidget(QLabel("Max Scale"))
-        blend_right.addWidget(self.vmax_slider)
+        # Colormap scale controls (spinboxes only, no sliders)
+        scale_controls = QHBoxLayout()
+        self.vmin_spin = QDoubleSpinBox()
+        self.vmin_spin.setDecimals(3)
+        self.vmax_spin = QDoubleSpinBox()
+        self.vmax_spin.setDecimals(3)
+        scale_controls.addWidget(QLabel("Min:"))
+        scale_controls.addWidget(self.vmin_spin)
+        scale_controls.addWidget(QLabel("Max:"))
+        scale_controls.addWidget(self.vmax_spin)
+        blend_right.addLayout(scale_controls)
+        self.vmin_spin.valueChanged.connect(self.update_colormap_scale)
+        self.vmax_spin.valueChanged.connect(self.update_colormap_scale)
 
         # Axis scale and units
         axis_group = QGroupBox("Axis Scale and Units")
@@ -262,24 +276,12 @@ class MainWindow(QMainWindow):
         axis_group.setLayout(axis_layout)
         blend_right.addWidget(axis_group)
 
-        # Measurement tool
-        measurement_group = QGroupBox("Measurement Tools")
-        measurement_layout = QVBoxLayout()
-        self.measure_btn = QPushButton("NOT CURRENTLY WORKING:Measure Distance")
-        self.measure_btn.setCheckable(True)
-        self.measure_btn.toggled.connect(self.toggle_measurement_mode)
-        measurement_layout.addWidget(self.measure_btn)
-        self.status_label = QLabel("Ready")
-        measurement_layout.addWidget(self.status_label)
-        measurement_group.setLayout(measurement_layout)
-        blend_right.addWidget(measurement_group)
         blend_right.addStretch(1)
         blend_layout.addLayout(blend_right, stretch=1)
         self.measuring = False
         self.measurement_points = []
         self.measurement_lines = []
         self.measurement_annotation = None
-
         blend_tab = QWidget()
         blend_tab.setLayout(blend_layout)
         self.tab_widget.addTab(blend_tab, "Blended")
@@ -292,7 +294,6 @@ class MainWindow(QMainWindow):
         self.grid_canvas.setMinimumSize(600, 400)
         grid_left.addWidget(self.grid_canvas)
         grid_layout.addLayout(grid_left, stretch=3)
-
         grid_right = QVBoxLayout()
         self.grid_type_combo = QComboBox()
         self.grid_type_combo.addItems(["Points", "Dotted Lines"])
@@ -306,7 +307,6 @@ class MainWindow(QMainWindow):
         grid_right.addWidget(btn_save_grid)
         grid_right.addStretch(1)
         grid_layout.addLayout(grid_right, stretch=1)
-
         grid_tab.setLayout(grid_layout)
         self.tab_widget.addTab(grid_tab, "Grid Overlay")
 
@@ -318,16 +318,15 @@ class MainWindow(QMainWindow):
 
     # --- Data and Image Loading ---
     def load_image(self):
-        file_name, _ = QFileDialog.getOpenFileName(self, "Open Image", "",
-                                                   "Image Files (*.png *.jpg *.bmp)")
+        file_name, _ = QFileDialog.getOpenFileName(self, "Open Image", "", "Image Files (*.png *.jpg *.bmp)")
         if file_name:
             self.current_pixmap = QPixmap(file_name)
             self.image_label.setPixmap(self.current_pixmap)
             self.image_label.setScaledContents(True)
+            self.invalidate_cache()
 
     def load_csv_excel(self):
-        file_name, _ = QFileDialog.getOpenFileName(self, "Open File", "",
-                                                   "CSV Files (*.csv);;Excel Files (*.xls *.xlsx)")
+        file_name, _ = QFileDialog.getOpenFileName(self, "Open File", "", "CSV Files (*.csv);;Excel Files (*.xls *.xlsx)")
         if file_name:
             try:
                 if file_name.endswith(".csv"):
@@ -343,38 +342,56 @@ class MainWindow(QMainWindow):
                         item = QTableWidgetItem(str(data[r, c]))
                         self.table_widget.setItem(r, c, item)
                 self.intensity_data = data
+                self.invalidate_cache()
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Could not load file.\n{str(e)}")
 
     def add_row(self):
         current_rows = self.table_widget.rowCount()
         self.table_widget.insertRow(current_rows)
+        self.invalidate_cache()
 
     def remove_row(self):
         current_rows = self.table_widget.rowCount()
         if current_rows > 0:
             self.table_widget.removeRow(current_rows - 1)
+            self.invalidate_cache()
+
+    def invalidate_cache(self):
+        self.cached_intensity_array = None
+        self.last_csv_data = None
+        self.last_csv_shape = None
+        self.last_pixmap_size = None
 
     def get_intensity_array(self):
+        # Check if cache is valid
         rows = self.table_widget.rowCount()
         cols = self.table_widget.columnCount()
-        arr = np.zeros((rows, cols), dtype=float)
+        current_data = []
         for r in range(rows):
+            row = []
             for c in range(cols):
                 item = self.table_widget.item(r, c)
-                if item is not None:
-                    try:
-                        arr[r, c] = float(item.text())
-                    except ValueError:
-                        arr[r, c] = 0.0
+                row.append(float(item.text()) if item and item.text() else 0.0)
+            current_data.append(row)
+        pixmap_size = (self.current_pixmap.width(), self.current_pixmap.height()) if self.current_pixmap else None
+        if (self.cached_intensity_array is not None and
+            self.last_csv_data == current_data and
+                self.last_pixmap_size == pixmap_size):
+            return self.cached_intensity_array
+        arr = np.array(current_data, dtype=float)
         if self.current_pixmap:
             target_height = self.current_pixmap.height()
             target_width = self.current_pixmap.width()
-            zoom_y = target_height / rows
-            zoom_x = target_width / cols
+            zoom_y = target_height / arr.shape[0]
+            zoom_x = target_width / arr.shape[1]
             arr_resized = zoom(arr, (zoom_y, zoom_x), order=1)
-            return arr_resized
-        return arr
+            self.cached_intensity_array = arr_resized
+        else:
+            self.cached_intensity_array = arr
+        self.last_csv_data = current_data
+        self.last_pixmap_size = pixmap_size
+        return self.cached_intensity_array
 
     # --- Visualization Controls ---
     def update_alpha(self):
@@ -392,14 +409,24 @@ class MainWindow(QMainWindow):
         intens = self.get_intensity_array()
         data_min = np.min(intens)
         data_max = np.max(intens)
-        vmin = data_min + (data_max - data_min) * (self.vmin_slider.value() / 100)
-        vmax = data_min + (data_max - data_min) * (self.vmax_slider.value() / 100)
+        # Set spinbox ranges
+        self.vmin_spin.setRange(data_min, data_max)
+        self.vmax_spin.setRange(data_min, data_max)
+        vmin = self.vmin_spin.value()
+        vmax = self.vmax_spin.value()
         intensity_units = self.intensity_unit_input.text()
-        self.plot_canvas.draw_heatmap(
-            self.current_pixmap, intens,
-            alpha=self.alpha, cmap=self.cmap,
-            vmin=vmin, vmax=vmax, units=intensity_units
-        )
+        if hasattr(self, '_current_vis_mode') and self._current_vis_mode == "contour":
+            self.plot_canvas.draw_contours(
+                self.current_pixmap, intens,
+                alpha=self.alpha, cmap=self.cmap,
+                levels=np.linspace(vmin, vmax, 20), units=intensity_units
+            )
+        else:
+            self.plot_canvas.draw_heatmap(
+                self.current_pixmap, intens,
+                alpha=self.alpha, cmap=self.cmap,
+                vmin=vmin, vmax=vmax, units=intensity_units
+            )
 
     def show_heatmap(self):
         if not self.current_pixmap or self.table_widget.rowCount() == 0:
@@ -408,10 +435,12 @@ class MainWindow(QMainWindow):
         intens = self.get_intensity_array()
         intensity_units = self.intensity_unit_input.text()
         self._current_vis_mode = "heatmap"
+        self.vmin_spin.setValue(np.min(intens))
+        self.vmax_spin.setValue(np.max(intens))
         self.plot_canvas.draw_heatmap(
             self.current_pixmap, intens,
             alpha=self.alpha, cmap=self.cmap,
-            units=intensity_units
+            vmin=self.vmin_spin.value(), vmax=self.vmax_spin.value(), units=intensity_units
         )
 
     def show_contours(self):
@@ -419,10 +448,8 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Warning", "Load an image and some intensity data first.")
             return
         intens = self.get_intensity_array()
-        data_min = np.min(intens)
-        data_max = np.max(intens)
-        vmin = data_min + (data_max - data_min) * (self.vmin_slider.value() / 100)
-        vmax = data_min + (data_max - data_min) * (self.vmax_slider.value() / 100)
+        vmin = self.vmin_spin.value()
+        vmax = self.vmax_spin.value()
         num_levels = 20
         levels = np.linspace(vmin, vmax, num_levels)
         self._current_vis_mode = "contour"
@@ -444,10 +471,8 @@ class MainWindow(QMainWindow):
                 return
             highlight_values = [float(x.strip()) for x in highlight_text.split(',')]
             intens = self.get_intensity_array()
-            data_min = np.min(intens)
-            data_max = np.max(intens)
-            vmin = data_min + (data_max - data_min) * (self.vmin_slider.value() / 100)
-            vmax = data_min + (data_max - data_min) * (self.vmax_slider.value() / 100)
+            vmin = self.vmin_spin.value()
+            vmax = self.vmax_spin.value()
             intensity_units = self.intensity_unit_input.text()
             self.plot_canvas.draw_heatmap(
                 self.current_pixmap, intens,
@@ -501,124 +526,6 @@ class MainWindow(QMainWindow):
                 self.show_heatmap()
         elif self.tab_widget.currentIndex() == 3:
             self.show_grid_overlay()
-
-    # --- Measurement Tool ---
-    def toggle_measurement_mode(self, checked):
-        if checked:
-            self.measuring = True
-            self.measurement_points = []
-            self.measurement_annotation = None
-            self.measurement_lines = []
-            self.measurement_cid = self.plot_canvas.mpl_connect('button_press_event', self.on_canvas_click)
-            self.status_label.setText("NOT CURRENTLY WORKING:Measurement Mode: Click two points to measure distance")
-        else:
-            if hasattr(self, 'measurement_cid'):
-                self.plot_canvas.mpl_disconnect(self.measurement_cid)
-            self.clear_measurements()
-            self.status_label.setText("NOT CURRENTLY WORKING:Ready")
-
-    def clear_measurements(self):
-        """Remove all measurement artifacts from the plot"""
-        if hasattr(self, 'measurement_annotation') and self.measurement_annotation:
-            self.measurement_annotation.remove()
-            self.measurement_annotation = None
-        for line in self.measurement_lines:
-            if line in self.plot_canvas.ax.lines:
-                line.remove()
-        self.measurement_lines = []
-        self.measurement_points = []
-        self.plot_canvas.draw()
-
-    def on_canvas_click(self, event):
-        if not self.measuring or not event.inaxes or event.inaxes != self.plot_canvas.ax:
-            return
-
-        self.measurement_points.append((event.xdata, event.ydata))
-
-        if len(self.measurement_points) == 2:
-            # Remove previous measurements
-            self.clear_measurements()
-
-            # Get both points
-            p1, p2 = self.measurement_points
-
-            # Draw measurement line
-            line, = self.plot_canvas.ax.plot(
-                [p1[0], p2[0]], [p1[1], p2[1]],
-                color='red', linewidth=2, linestyle='--'
-            )
-            self.measurement_lines.append(line)
-
-            # Calculate midpoint
-            midpoint = ((p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2)
-
-            # Calculate distance
-            dx_pixels = p2[0] - p1[0]
-            dy_pixels = p2[1] - p1[1]
-            pixel_dist = np.sqrt(dx_pixels ** 2 + dy_pixels ** 2)
-
-            # Convert to real units if available
-            if hasattr(self, 'real_scale_x') and hasattr(self, 'real_scale_y'):
-                dx_real = dx_pixels * self.real_scale_x
-                dy_real = dy_pixels * self.real_scale_y
-                real_dist = np.sqrt(dx_real ** 2 + dy_real ** 2)
-                units = self.scale_unit_input.text().strip() or 'units'
-                distance_text = f"{real_dist:.2f} {units}"
-            else:
-                distance_text = f"{pixel_dist:.2f} pixels"
-
-            # Create annotation
-            self.measurement_annotation = self.plot_canvas.ax.annotate(
-                distance_text,
-                xy=midpoint,
-                xytext=(10, 10),
-                textcoords='offset points',
-                fontsize=10,
-                color='black',
-                bbox=dict(
-                    boxstyle='round,pad=0.5',
-                    fc='white',
-                    ec='red',
-                    alpha=0.8
-                ),
-                annotation_clip=False  # Ensure text is always visible
-            )
-
-            # Refresh the display
-            self.plot_canvas.draw()
-
-            # Reset for next measurement
-            self.measurement_points = []
-
-    def on_canvas_click(self, event):
-        if not self.measuring or not event.inaxes or event.inaxes != self.plot_canvas.ax:
-            return
-        self.measurement_points.append((event.xdata, event.ydata))
-        if len(self.measurement_points) == 2:
-            p1, p2 = self.measurement_points
-            for line in self.measurement_lines:
-                if line in self.plot_canvas.ax.lines:
-                    line.remove()
-            line, = self.plot_canvas.ax.plot([p1[0], p2[0]], [p1[1], p2[1]], 'r-', linewidth=2)
-            self.measurement_lines.append(line)
-            pixel_dist = np.sqrt((p2[0] - p1[0])**2 + (p2[1] - p1[1])**2)
-            if hasattr(self, 'real_scale_x') and hasattr(self, 'real_scale_y'):
-                x_dist = abs(p2[0] - p1[0]) * self.real_scale_x
-                y_dist = abs(p2[1] - p1[1]) * self.real_scale_y
-                real_dist = np.sqrt(x_dist**2 + y_dist**2)
-                units = self.scale_unit_input.text() if hasattr(self, 'scale_unit_input') else "units"
-                distance_text = f"{real_dist:.2f} {units}"
-            else:
-                distance_text = f"{pixel_dist:.2f} pixels"
-            if hasattr(self, 'measurement_annotation') and self.measurement_annotation:
-                self.measurement_annotation.remove()
-            midpoint = ((p1[0] + p2[0])/2, (p1[1] + p2[1])/2)
-            self.measurement_annotation = self.plot_canvas.ax.annotate(
-                distance_text, xy=midpoint, xytext=(10, 10), textcoords="offset points",
-                bbox=dict(boxstyle="round", fc="white", alpha=0.7)
-            )
-            self.measurement_points = []
-            self.plot_canvas.draw()
 
     def save_blended_image(self):
         if not self.plot_canvas.figure:
@@ -685,7 +592,6 @@ class MainWindow(QMainWindow):
         self.grid_canvas.draw()
 
     def closeEvent(self, event):
-        # Clean up matplotlib figures to prevent memory leaks
         if hasattr(self, 'plot_canvas') and self.plot_canvas.figure:
             plt.close(self.plot_canvas.figure)
         if hasattr(self, 'grid_canvas') and self.grid_canvas.figure:
