@@ -14,9 +14,37 @@ from PyQt6.QtGui import QPixmap
 from PyQt6.QtCore import Qt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
+from matplotlib.colors import ListedColormap
 import matplotlib.pyplot as plt
 import matplotlib.lines as mlines
 
+from matplotlib.colors import ListedColormap
+
+def get_threat_zone_cmap():
+    """Discrete 7-level threat zone colormap (categorical)."""
+    colors = [
+        "#0033CC",  # Deep Blue
+        "#00CCCC",  # Cyan
+        "#00CC44",  # Green
+        "#FFDD00",  # Yellow
+        "#FF8800",  # Orange
+        "#FF2222",  # Red
+        "#AA00CC",  # Purple
+    ]
+    return ListedColormap(colors, name='threat_zones')
+
+def get_continuous_dose_cmap():
+    """Continuous 7-level sequential colormap (blue→red)."""
+    colors = [
+        "#0022CC",  # Deep Blue
+        "#0099CC",  # Blue-Cyan
+        "#00CC66",  # Green
+        "#CCFF33",  # Yellow-Green
+        "#FFDD00",  # Yellow
+        "#FF8800",  # Orange
+        "#FF2222",  # Red
+    ]
+    return ListedColormap(colors, name='dose_field')
 
 class DraggableCanvas(FigureCanvasQTAgg):
     def __init__(self, parent=None):
@@ -82,7 +110,7 @@ class DraggableCanvas(FigureCanvasQTAgg):
 
     def draw_contours(self, base_img: QPixmap, intensity_array,
                       alpha=0.6, cmap='jet', levels=6,
-                      interpolation='bilinear', units=''):
+                      interpolation='bilinear', units='',extend ='neither'):
         self.ax.clear()
         if self.cbar is not None:
             self.cbar.remove()
@@ -108,7 +136,7 @@ class DraggableCanvas(FigureCanvasQTAgg):
             levels=levels,
             cmap=cmap,
             alpha=alpha,
-            extend='max'
+            extend= 'max'
         )
         self.ax.set_xlim([0, width])
         self.ax.set_ylim([height, 0])
@@ -214,7 +242,9 @@ class MainWindow(QMainWindow):
 
         # Color map selection
         self.cmap_combo = QComboBox()
-        self.cmap_combo.addItems(["jet", "viridis", "plasma", "inferno", "magma", "cividis", "coolwarm", "YlGnBu"])
+        self.cmap_combo.addItems(["jet", "viridis", "plasma", "inferno", "magma", "cividis", "coolwarm", "YlGnBu", "Reds", "Accent"])
+        self.cmap_combo.addItem("Threat Zones (7)")
+        self.cmap_combo.addItem("Dose Field (7)")
         self.cmap_combo.setCurrentText("jet")
         self.cmap_combo.currentTextChanged.connect(self.update_cmap)
         blend_right.addWidget(QLabel("Colormap"))
@@ -236,6 +266,18 @@ class MainWindow(QMainWindow):
         highlight_layout.addWidget(btn_apply_highlights)
         highlight_group.setLayout(highlight_layout)
         blend_right.addWidget(highlight_group)
+        #custom colour scale
+        custom_scale_group = QGroupBox("Custom Color Scale")
+        custom_layout = QVBoxLayout()
+        self.custom_levels_input = QLineEdit()
+        self.custom_levels_input.setPlaceholderText("Enter 2-7 comma-separated values (e.g., 1000,3000,5000)")
+        custom_layout.addWidget(QLabel("Threshold Values:"))
+        custom_layout.addWidget(self.custom_levels_input)
+        btn_apply_custom = QPushButton("Apply Custom Scale")
+        btn_apply_custom.clicked.connect(self.apply_custom_scale)
+        custom_layout.addWidget(btn_apply_custom)
+        custom_scale_group.setLayout(custom_layout)
+        blend_right.addWidget(custom_scale_group)
 
         # Colormap scale controls (spinboxes only, no sliders)
         scale_controls = QHBoxLayout()
@@ -317,6 +359,39 @@ class MainWindow(QMainWindow):
         self._current_vis_mode = "heatmap"
 
     # --- Data and Image Loading ---
+    def apply_custom_scale(self):
+        if not self.current_pixmap or self.table_widget.rowCount() == 0:
+            QMessageBox.warning(self, "Warning", "Load image and data first")
+            return
+
+        try:
+            levels = [float(x.strip()) for x in self.custom_levels_input.text().split(',')]
+            #levels = [0, 200, 500, 1000, 6000, 15000]
+            if not 2 <= len(levels) <= 7:
+                raise ValueError("Enter 2-7 values")
+
+            levels = sorted(levels)
+            intens = self.get_intensity_array()
+
+            # Create custom colormap with transparent under-layer
+            base_cmap = plt.get_cmap(self.cmap)
+            colors = base_cmap(np.linspace(0, 1, len(levels) - 1))
+            custom_cmap = ListedColormap(colors)
+            custom_cmap.set_under((0, 0, 0, 0))
+
+            # Draw contours with extend='min' handling
+            self.plot_canvas.draw_contours(
+                self.current_pixmap, intens,
+                alpha=self.alpha,
+                cmap=custom_cmap,
+                levels=levels,
+                units=self.intensity_unit_input.text(),
+                extend='min'
+            )
+
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Invalid input: {str(e)}")
+
     def load_image(self):
         file_name, _ = QFileDialog.getOpenFileName(self, "Open Image", "", "Image Files (*.png *.jpg *.bmp)")
         if file_name:
@@ -400,7 +475,13 @@ class MainWindow(QMainWindow):
         self.update_display()
 
     def update_cmap(self):
-        self.cmap = self.cmap_combo.currentText()
+        cmap_name = self.cmap_combo.currentText()
+        if cmap_name == "Threat Zones (7)":
+            self.cmap = get_threat_zone_cmap()
+        elif cmap_name == "Dose Field (7)":
+            self.cmap = get_continuous_dose_cmap()
+        else:
+            self.cmap = cmap_name
         self.update_display()
 
     def update_colormap_scale(self):
@@ -450,7 +531,10 @@ class MainWindow(QMainWindow):
         intens = self.get_intensity_array()
         vmin = self.vmin_spin.value()
         vmax = self.vmax_spin.value()
-        num_levels = 20
+        if isinstance(self.cmap, ListedColormap) and self.cmap.name in ['threat_zones', 'dose_field']:
+            num_levels = 7
+        else:
+            num_levels = 20
         levels = np.linspace(vmin, vmax, num_levels)
         self._current_vis_mode = "contour"
         intensity_units = self.intensity_unit_input.text()
