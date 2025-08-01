@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QTabWidget,
     QPushButton, QTableWidget, QTableWidgetItem,
     QFileDialog, QLabel, QMessageBox, QComboBox,
-    QLineEdit, QGroupBox, QDoubleSpinBox, QSlider
+    QLineEdit, QGroupBox, QDoubleSpinBox, QSlider, QCheckBox, QSpinBox
 )
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtCore import Qt
@@ -81,11 +81,12 @@ class DraggableCanvas(FigureCanvasQTAgg):
 
     def draw_heatmap(self, base_img: QPixmap, intensity_array,
                      alpha=0.6, cmap='jet', interpolation='bilinear',
-                     vmin=None, vmax=None, units=''):
+                     vmin=None, vmax=None, units='', scale_x=1.0, scale_y=1.0, distance_units='pixels'):
         self.ax.clear()
         if self.cbar is not None:
             self.cbar.remove()
             self.cbar = None
+
         image = base_img.toImage()
         width = image.width()
         height = image.height()
@@ -93,28 +94,48 @@ class DraggableCanvas(FigureCanvasQTAgg):
         ptr.setsize(height * width * 4)
         arr = np.frombuffer(ptr, np.uint8).reshape((height, width, 4))
         arr_rgb = arr[..., :3]
-        self.ax.imshow(arr_rgb, aspect='equal', extent=[0, width, 0, height], origin='lower')
+
+        # Convert pixel coordinates to real coordinates
+        real_width = width * scale_x
+        real_height = height * scale_y
+
+        self.ax.imshow(arr_rgb, aspect='equal', extent=[-real_width/2, real_width/2, real_height/2, -real_width/2], origin='lower')
         im = self.ax.imshow(intensity_array, cmap=cmap, alpha=alpha,
                             interpolation=interpolation,
-                            extent=[0, width, 0, height],
+                            extent=[-real_width/2, real_width/2, real_height/2, -real_width/2],
                             origin='lower',
                             vmin=vmin, vmax=vmax)
-        self.ax.set_xlim([0, width])
-        self.ax.set_ylim([height, 0])
+
+        #self.ax.set_xlim([0, real_width])
+        #self.ax.set_ylim([real_height, 0])
+        self.ax.set_xlim([-real_width/2, real_width/2])
+        self.ax.set_ylim([real_height/2, -real_width/2])
+
+
+        # Set axis labels with units
+        self.ax.set_xlabel(f"Distance ({distance_units})", fontsize=15, fontweight='bold')
+        self.ax.set_ylabel(f"Distance ({distance_units})", fontsize=15, fontweight='bold')
+
         self.cbar = self.figure.colorbar(im, ax=self.ax, orientation='vertical', pad=0.05)
+        #self.cbar.ax.tick_params(labelsize=11)
         if units:
-            self.cbar.set_label(f'Intensity ({units})', rotation=270, labelpad=15)
+            self.cbar.set_label(f'Intensity ({units})', rotation=270, labelpad=20, fontsize=15, fontweight='bold')
+            #self.plot_canvas.cbar.ax.tick_params(labelsize=tick_fontsize)
+
         else:
-            self.cbar.set_label('Intensity', rotation=270, labelpad=15)
+            self.cbar.set_label('Intensity', rotation=270, labelpad=20, fontsize=15, fontweight='bold')
+
         self.draw()
 
     def draw_contours(self, base_img: QPixmap, intensity_array,
                       alpha=0.6, cmap='jet', levels=6,
-                      interpolation='bilinear', units='',extend ='neither'):
+                      interpolation='bilinear', units='', extend='neither',
+                      scale_x=1.0, scale_y=1.0, distance_units='pixels'):
         self.ax.clear()
         if self.cbar is not None:
             self.cbar.remove()
             self.cbar = None
+
         image = base_img.toImage()
         width = image.width()
         height = image.height()
@@ -122,29 +143,47 @@ class DraggableCanvas(FigureCanvasQTAgg):
         ptr.setsize(height * width * 4)
         arr = np.frombuffer(ptr, np.uint8).reshape((height, width, 4))
         arr_rgb = arr[..., :3]
-        self.ax.imshow(arr_rgb, aspect='equal', extent=[0, width, 0, height], origin='lower')
+
+        # Convert pixel coordinates to real coordinates
+        real_width = width * scale_x
+        real_height = height * scale_y
+
+        self.ax.imshow(arr_rgb, aspect='equal', extent=[-real_width/2, real_width/2, -real_height/2, real_width/2], origin='lower')
+
         rows, cols = intensity_array.shape
-        X = np.linspace(0, width, cols)
-        Y = np.linspace(0, height, rows)
+        X = np.linspace(-real_width/2, real_width/2, cols)
+        Y = np.linspace(-real_height/2, real_height/2, rows)
         xx, yy = np.meshgrid(X, Y)
+
         if isinstance(levels, int):
             vmin = np.min(intensity_array)
             vmax = np.max(intensity_array)
             levels = np.linspace(vmin, vmax, levels)
+
         cs = self.ax.contourf(
             xx, yy, intensity_array,
             levels=levels,
             cmap=cmap,
             alpha=alpha,
-            extend= 'max'
+            extend='max'
         )
-        self.ax.set_xlim([0, width])
-        self.ax.set_ylim([height, 0])
+
+        self.ax.set_xlim([-real_width/2, real_width/2])
+        self.ax.set_ylim([real_height/2, -real_width/2])
+
+        # Set axis labels with units
+        self.ax.set_xlabel(f"Distance ({distance_units})", fontsize=17, fontweight='bold')
+        self.ax.set_ylabel(f"Distance ({distance_units})", fontsize=17, fontweight='bold')
+
         self.cbar = self.figure.colorbar(cs, ax=self.ax, orientation='vertical', pad=0.05)
         if units:
-            self.cbar.set_label(f'Intensity ({units})', rotation=270, labelpad=15)
+            self.cbar.set_label(f'Intensity ({units})', rotation=270, labelpad=15, fontsize=14, fontweight='bold')
+            self.cbar.ax.tick_params(labelsize=13)
+
         else:
-            self.cbar.set_label('Intensity', rotation=270, labelpad=15)
+            self.cbar.set_label('Intensity', rotation=270, labelpad=15, fontsize=14, fontweight='bold')
+            self.cbar.ax.tick_params(labelsize=13)
+
         self.draw()
 
 
@@ -266,6 +305,7 @@ class MainWindow(QMainWindow):
         highlight_layout.addWidget(btn_apply_highlights)
         highlight_group.setLayout(highlight_layout)
         blend_right.addWidget(highlight_group)
+
         #custom colour scale
         custom_scale_group = QGroupBox("Custom Color Scale")
         custom_layout = QVBoxLayout()
@@ -304,12 +344,12 @@ class MainWindow(QMainWindow):
         self.scale_y_input = QLineEdit("1.0")
         scale_layout.addWidget(self.scale_y_input)
         scale_layout.addWidget(QLabel("Units:"))
-        self.scale_unit_input = QLineEdit("mm")
+        self.scale_unit_input = QLineEdit("cm")
         scale_layout.addWidget(self.scale_unit_input)
         axis_layout.addLayout(scale_layout)
         intensity_layout = QHBoxLayout()
         intensity_layout.addWidget(QLabel("Intensity Units:"))
-        self.intensity_unit_input = QLineEdit("counts")
+        self.intensity_unit_input = QLineEdit("uGy/h")
         intensity_layout.addWidget(self.intensity_unit_input)
         axis_layout.addLayout(intensity_layout)
         btn_apply_scale = QPushButton("Apply Scale and Units")
@@ -317,6 +357,54 @@ class MainWindow(QMainWindow):
         axis_layout.addWidget(btn_apply_scale)
         axis_group.setLayout(axis_layout)
         blend_right.addWidget(axis_group)
+
+        formatting_group = QGroupBox("Axis Formatting")
+        formatting_layout = QVBoxLayout()
+
+        # Font size controls
+        font_layout = QHBoxLayout()
+        font_layout.addWidget(QLabel("Label Font Size:"))
+        self.label_fontsize_spin = QDoubleSpinBox()
+        self.label_fontsize_spin.setRange(6, 24)
+        self.label_fontsize_spin.setValue(12)
+        font_layout.addWidget(self.label_fontsize_spin)
+
+        font_layout.addWidget(QLabel("Tick Font Size:"))
+        self.tick_fontsize_spin = QDoubleSpinBox()
+        self.tick_fontsize_spin.setRange(6, 20)
+        self.tick_fontsize_spin.setValue(10)
+        font_layout.addWidget(self.tick_fontsize_spin)
+        formatting_layout.addLayout(font_layout)
+
+        # Font style controls
+        style_layout = QHBoxLayout()
+        self.bold_checkbox = QCheckBox("Bold Labels")
+        self.italic_checkbox = QCheckBox("Italic Labels")
+        style_layout.addWidget(self.bold_checkbox)
+        style_layout.addWidget(self.italic_checkbox)
+        formatting_layout.addLayout(style_layout)
+
+        # Tick controls
+        tick_layout = QHBoxLayout()
+        tick_layout.addWidget(QLabel("X Ticks:"))
+        self.x_ticks_spin = QSpinBox()
+        self.x_ticks_spin.setRange(2, 20)
+        self.x_ticks_spin.setValue(5)
+        tick_layout.addWidget(self.x_ticks_spin)
+
+        tick_layout.addWidget(QLabel("Y Ticks:"))
+        self.y_ticks_spin = QSpinBox()
+        self.y_ticks_spin.setRange(2, 20)
+        self.y_ticks_spin.setValue(5)
+        tick_layout.addWidget(self.y_ticks_spin)
+        formatting_layout.addLayout(tick_layout)
+
+        btn_apply_formatting = QPushButton("Apply Formatting")
+        btn_apply_formatting.clicked.connect(self.apply_formatting)
+        formatting_layout.addWidget(btn_apply_formatting)
+
+        formatting_group.setLayout(formatting_layout)
+        blend_right.addWidget(formatting_group)
 
         blend_right.addStretch(1)
         blend_layout.addLayout(blend_right, stretch=1)
@@ -359,6 +447,75 @@ class MainWindow(QMainWindow):
         self._current_vis_mode = "heatmap"
 
     # --- Data and Image Loading ---
+    def apply_formatting(self):
+        """Apply advanced formatting to the current plot"""
+        if not hasattr(self.plot_canvas, 'ax') or not self.plot_canvas.ax.get_children():
+            QMessageBox.warning(self, "Warning", "Create a plot first")
+            return
+
+        # Get formatting parameters
+        label_fontsize = self.label_fontsize_spin.value()
+        tick_fontsize = self.tick_fontsize_spin.value()
+        is_bold = self.bold_checkbox.isChecked()
+        is_italic = self.italic_checkbox.isChecked()
+        x_ticks = self.x_ticks_spin.value()
+        y_ticks = self.y_ticks_spin.value()
+
+        # Determine font weight and style
+        fontweight = 'bold' if is_bold else 'normal'
+        fontstyle = 'italic' if is_italic else 'normal'
+
+        # Apply to axis labels
+        self.plot_canvas.ax.xaxis.label.set_fontsize(label_fontsize)
+        self.plot_canvas.ax.xaxis.label.set_fontweight(fontweight)
+        self.plot_canvas.ax.xaxis.label.set_fontstyle(fontstyle)
+
+        self.plot_canvas.ax.yaxis.label.set_fontsize(label_fontsize)
+        self.plot_canvas.ax.yaxis.label.set_fontweight(fontweight)
+        self.plot_canvas.ax.yaxis.label.set_fontstyle(fontstyle)
+
+        # Apply to tick labels
+        self.plot_canvas.ax.tick_params(axis='both', which='major', labelsize=tick_fontsize)
+        # self.cbar.ax.tick_params(labelsize=tick_fontsize)
+        self.plot_canvas.cbar.ax.tick_params(labelsize=tick_fontsize)
+
+        # Set number of ticks
+        xlim = self.plot_canvas.ax.get_xlim()
+        ylim = self.plot_canvas.ax.get_ylim()
+
+        x_tick_positions1 = np.linspace(xlim[0], xlim[1], x_ticks)
+        y_tick_positions1 = np.linspace(ylim[0], ylim[1], y_ticks)
+
+        # Round each position to nearest multiple of 50 using NumPy
+        x_tick_positions = np.round(x_tick_positions1 / 50) * 50
+        y_tick_positions = np.round(y_tick_positions1 / 50) * 50
+
+        # Ensure 0 is included if it falls within the axis range
+        if xlim[0] <= 0 <= xlim[1] and 0 not in x_tick_positions:
+            x_tick_positions = np.append(x_tick_positions, 0)
+            x_tick_positions = np.sort(x_tick_positions)
+
+        if ylim[0] <= 0 <= ylim[1] and 0 not in y_tick_positions:
+            y_tick_positions = np.append(y_tick_positions, 0)
+            y_tick_positions = np.sort(y_tick_positions)
+
+        self.plot_canvas.ax.set_xticks(x_tick_positions)
+        self.plot_canvas.ax.set_yticks(y_tick_positions)
+
+        # Format tick labels to show reasonable precision
+        self.plot_canvas.ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'{x:.0f}'))
+        self.plot_canvas.ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'{x:.0f}'))
+
+        # Apply formatting to colorbar if it exists
+        if hasattr(self.plot_canvas, 'cbar') and self.plot_canvas.cbar is not None:
+            self.plot_canvas.cbar.ax.yaxis.label.set_fontsize(label_fontsize)
+            self.plot_canvas.cbar.ax.yaxis.label.set_fontweight(fontweight)
+            self.plot_canvas.cbar.ax.yaxis.label.set_fontstyle(fontstyle)
+            # self.plot_canvas.cbar.ax.tick_params(labelsize=tick_fontsize - 1)
+            self.plot_canvas.cbar.ax.tick_params(labelsize=tick_fontsize)
+
+        self.plot_canvas.draw()
+
     def apply_custom_scale(self):
         if not self.current_pixmap or self.table_widget.rowCount() == 0:
             QMessageBox.warning(self, "Warning", "Load image and data first")
@@ -513,36 +670,53 @@ class MainWindow(QMainWindow):
         if not self.current_pixmap or self.table_widget.rowCount() == 0:
             QMessageBox.warning(self, "Warning", "Load an image and some intensity data first.")
             return
+
         intens = self.get_intensity_array()
         intensity_units = self.intensity_unit_input.text()
+        distance_units = self.scale_unit_input.text()
+        scale_x = float(self.scale_x_input.text()) if self.scale_x_input.text() else 1.0
+        scale_y = float(self.scale_y_input.text()) if self.scale_y_input.text() else 1.0
+
         self._current_vis_mode = "heatmap"
         self.vmin_spin.setValue(np.min(intens))
         self.vmax_spin.setValue(np.max(intens))
+
         self.plot_canvas.draw_heatmap(
             self.current_pixmap, intens,
             alpha=self.alpha, cmap=self.cmap,
-            vmin=self.vmin_spin.value(), vmax=self.vmax_spin.value(), units=intensity_units
+            vmin=self.vmin_spin.value(), vmax=self.vmax_spin.value(),
+            units=intensity_units,
+            scale_x=scale_x, scale_y=scale_y, distance_units=distance_units
         )
 
     def show_contours(self):
         if not self.current_pixmap or self.table_widget.rowCount() == 0:
             QMessageBox.warning(self, "Warning", "Load an image and some intensity data first.")
             return
+
         intens = self.get_intensity_array()
+        intensity_units = self.intensity_unit_input.text()
+        distance_units = self.scale_unit_input.text()
+        scale_x = float(self.scale_x_input.text()) if self.scale_x_input.text() else 1.0
+        scale_y = float(self.scale_y_input.text()) if self.scale_y_input.text() else 1.0
+
         vmin = self.vmin_spin.value()
         vmax = self.vmax_spin.value()
+
         if isinstance(self.cmap, ListedColormap) and self.cmap.name in ['threat_zones', 'dose_field']:
             num_levels = 7
         else:
             num_levels = 20
         levels = np.linspace(vmin, vmax, num_levels)
         self._current_vis_mode = "contour"
-        intensity_units = self.intensity_unit_input.text()
+
         self.plot_canvas.draw_contours(
             self.current_pixmap, intens,
             alpha=self.alpha, cmap=self.cmap,
-            levels=levels, units=intensity_units
+            levels=levels, units=intensity_units,
+            scale_x=scale_x, scale_y=scale_y, distance_units=distance_units,
         )
+
 
     def apply_highlights(self):
         if not self.current_pixmap or self.table_widget.rowCount() == 0:
@@ -588,15 +762,34 @@ class MainWindow(QMainWindow):
             scale_y = float(self.scale_y_input.text())
             distance_units = self.scale_unit_input.text()
             intensity_units = self.intensity_unit_input.text()
+
             self.real_scale_x = scale_x
             self.real_scale_y = scale_y
-            for canvas in [self.plot_canvas, self.grid_canvas]:
-                canvas.ax.set_xlabel(f"Distance ({distance_units})")
-                canvas.ax.set_ylabel(f"Distance ({distance_units})")
-                if hasattr(canvas, 'cbar') and canvas.cbar is not None:
-                    canvas.cbar.set_label(f'Intensity ({intensity_units})', rotation=270, labelpad=15)
-                canvas.draw()
-            self.update_display()
+
+            # Update the current visualization with new scaling
+            if not self.current_pixmap or self.table_widget.rowCount() == 0:
+                QMessageBox.warning(self, "Warning", "Load image and data first")
+                return
+
+            intens = self.get_intensity_array()
+
+            if hasattr(self, '_current_vis_mode') and self._current_vis_mode == "contour":
+                self.plot_canvas.draw_contours(
+                    self.current_pixmap, intens,
+                    alpha=self.alpha, cmap=self.cmap,
+                    levels=np.linspace(self.vmin_spin.value(), self.vmax_spin.value(), 20),
+                    units=intensity_units,
+                    scale_x=scale_x, scale_y=scale_y, distance_units=distance_units
+                )
+            else:
+                self.plot_canvas.draw_heatmap(
+                    self.current_pixmap, intens,
+                    alpha=self.alpha, cmap=self.cmap,
+                    vmin=self.vmin_spin.value(), vmax=self.vmax_spin.value(),
+                    units=intensity_units,
+                    scale_x=scale_x, scale_y=scale_y, distance_units=distance_units
+                )
+
         except ValueError:
             QMessageBox.warning(self, "Warning", "Please enter valid numeric values for scales.")
 
