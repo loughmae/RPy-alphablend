@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtCore import Qt
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+
 from matplotlib.figure import Figure
 from matplotlib.colors import ListedColormap
 import matplotlib.pyplot as plt
@@ -90,9 +91,14 @@ class DraggableCanvas(FigureCanvasQTAgg):
         image = base_img.toImage()
         width = image.width()
         height = image.height()
-        ptr = image.bits()
-        ptr.setsize(height * width * 4)
-        arr = np.frombuffer(ptr, np.uint8).reshape((height, width, 4))
+        try:
+            ptr = image.bits()
+            ptr.setsize(height * width * 4)
+            arr = np.frombuffer(ptr, np.uint8).reshape((height, width, 4))
+        except Exception as e:
+            print(f"Image processing error: {e}")
+            return
+
         arr_rgb = arr[..., :3]
 
         # Convert pixel coordinates to real coordinates
@@ -256,6 +262,28 @@ class MainWindow(QMainWindow):
         blend_right = QVBoxLayout()
 
         # Overlay buttons
+        # DPI, width and height controls for export
+        export_layout = QHBoxLayout()
+        export_layout.addWidget(QLabel("Export DPI:"))
+        self.dpi_spin = QSpinBox()
+        self.dpi_spin.setMinimum(72)
+        self.dpi_spin.setMaximum(1200)
+        self.dpi_spin.setValue(300)
+        export_layout.addWidget(self.dpi_spin)
+        export_layout.addWidget(QLabel("Width (inches):"))
+        self.width_spin = QDoubleSpinBox()
+        self.width_spin.setRange(1.0, 40.0)
+        self.width_spin.setDecimals(2)
+        self.width_spin.setValue(8.0)
+        export_layout.addWidget(self.width_spin)
+        export_layout.addWidget(QLabel("Height (inches):"))
+        self.height_spin = QDoubleSpinBox()
+        self.height_spin.setRange(1.0, 40.0)
+        self.height_spin.setDecimals(2)
+        self.height_spin.setValue(6.0)
+        export_layout.addWidget(self.height_spin)
+        blend_right.addLayout(export_layout)
+
         overlay_buttons_layout = QHBoxLayout()
         btn_heatmap = QPushButton("Show Heatmap Overlay")
         btn_heatmap.clicked.connect(self.show_heatmap)
@@ -807,20 +835,50 @@ class MainWindow(QMainWindow):
     def save_blended_image(self):
         if not self.plot_canvas.figure:
             return
+
+        # Get target DPI and size from UI
+        dpi = self.dpi_spin.value()
+        width_inches = self.width_spin.value()
+        height_inches = self.height_spin.value()
+
+        # Save original figure size and DPI for later restore
+        orig_size = self.plot_canvas.figure.get_size_inches()
+        orig_dpi = self.plot_canvas.figure.get_dpi()
+
+        # Set figure size & DPI for export (WYSIWYG, just more pixels)
+        self.plot_canvas.figure.set_size_inches(width_inches, height_inches)
+        self.plot_canvas.figure.set_dpi(dpi)
+        self.plot_canvas.draw()  # Redraw at new size for layout
+
+        # Ask user for file name and format
         file_name, _ = QFileDialog.getSaveFileName(
             self, "Save Blended Image", "",
-            "PNG Files (*.png);;JPEG Files (*.jpg *.jpeg);;All Files (*)"
+            "PNG Files (*.png);;JPEG Files (*.jpg *.jpeg);;SVG Files (*.svg);;PDF Files (*.pdf);;All Files (*)"
         )
         if file_name:
-            dpi = self.plot_canvas.figure.get_dpi()
-            width = self.current_pixmap.width() / dpi
-            height = self.current_pixmap.height() / dpi
-            self.plot_canvas.figure.set_size_inches(width, height)
-            use_transparency = not (file_name.lower().endswith('.jpg') or file_name.lower().endswith('.jpeg'))
-            self.plot_canvas.figure.savefig(
-                file_name, dpi=dpi, bbox_inches='tight',
-                pad_inches=0, transparent=use_transparency
-            )
+            ext = file_name.lower().split('.')[-1]
+            if ext in ['svg', 'pdf']:
+                # SVG/PDF: Vector, dpi is ignored, just use new size/layout
+                self.plot_canvas.figure.savefig(
+                    file_name,
+                    bbox_inches=None,  # Use same as on-screen display
+                    pad_inches=0,
+                    format=ext
+                )
+            else:
+                # PNG/JPEG: Raster, dpi is crucial!
+                self.plot_canvas.figure.savefig(
+                    file_name,
+                    dpi=dpi,
+                    bbox_inches=None,
+                    pad_inches=0,
+                    transparent=file_name.lower().endswith('.png')
+                )
+
+        # Restore figure for interactive use in the GUI
+        self.plot_canvas.figure.set_size_inches(orig_size)
+        self.plot_canvas.figure.set_dpi(orig_dpi)
+        self.plot_canvas.draw()
 
     def save_grid_image(self):
         if not self.grid_canvas.figure:
