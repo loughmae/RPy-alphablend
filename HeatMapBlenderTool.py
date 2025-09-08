@@ -1,56 +1,39 @@
-
 import sys
 import numpy as np
 import pandas as pd
 from scipy.ndimage import zoom
 from PyQt6.QtWidgets import (
-    QApplication, QMainWindow, QWidget,
-    QVBoxLayout, QHBoxLayout, QTabWidget,
-    QPushButton, QTableWidget, QTableWidgetItem,
-    QFileDialog, QLabel, QMessageBox, QComboBox,
-    QLineEdit, QGroupBox, QDoubleSpinBox, QSlider, QCheckBox, QSpinBox
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
+    QPushButton, QTableWidget, QTableWidgetItem, QFileDialog, QLabel, QMessageBox,
+    QComboBox, QLineEdit, QGroupBox, QDoubleSpinBox, QSlider, QCheckBox, QSpinBox
 )
-from PyQt6.QtGui import QPixmap
+from PyQt6.QtGui import QPixmap, QImage
 from PyQt6.QtCore import Qt
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
-
 from matplotlib.figure import Figure
 from matplotlib.colors import ListedColormap
 import matplotlib.pyplot as plt
 import matplotlib.lines as mlines
 
-from matplotlib.colors import ListedColormap
-
 def get_threat_zone_cmap():
-    """Discrete 7-level threat zone colormap (categorical)."""
     colors = [
-        "#0033CC",  # Deep Blue
-        "#00CCCC",  # Cyan
-        "#00CC44",  # Green
-        "#FFDD00",  # Yellow
-        "#FF8800",  # Orange
-        "#FF2222",  # Red
-        "#AA00CC",  # Purple
+        "#0033CC", "#00CCCC", "#00CC44", "#FFDD00",
+        "#FF8800", "#FF2222", "#AA00CC"
     ]
     return ListedColormap(colors, name='threat_zones')
 
 def get_continuous_dose_cmap():
-    """Continuous 7-level sequential colormap (blue→red)."""
     colors = [
-        "#0022CC",  # Deep Blue
-        "#0099CC",  # Blue-Cyan
-        "#00CC66",  # Green
-        "#CCFF33",  # Yellow-Green
-        "#FFDD00",  # Yellow
-        "#FF8800",  # Orange
-        "#FF2222",  # Red
+        "#0022CC", "#0099CC", "#00CC66", "#CCFF33",
+        "#FFDD00", "#FF8800", "#FF2222"
     ]
     return ListedColormap(colors, name='dose_field')
 
+
 class DraggableCanvas(FigureCanvasQTAgg):
     def __init__(self, parent=None):
-        fig = Figure()
-        super().__init__(fig)
+        self.figure = Figure()  # Store reference to figure
+        super().__init__(self.figure)
         self.setParent(parent)
         self.ax = self.figure.add_subplot(111)
         self.figure.tight_layout()
@@ -83,51 +66,50 @@ class DraggableCanvas(FigureCanvasQTAgg):
     def draw_heatmap(self, base_img: QPixmap, intensity_array,
                      alpha=0.6, cmap='jet', interpolation='bilinear',
                      vmin=None, vmax=None, units='', scale_x=1.0, scale_y=1.0, distance_units='pixels'):
-        self.ax.clear()
+        self.figure.clf()
         if self.cbar is not None:
-            self.cbar.remove()
+            try:
+                self.cbar.remove()
+            except Exception as e:
+                print(f"Colorbar remove exception: {e!r}")
             self.cbar = None
+        self.ax = self.figure.add_subplot(111)
 
-        image = base_img.toImage()
+        # SAFE IMAGE CONVERSION - CRITICAL FIX: copy() BEFORE reshape()
+        image = base_img.toImage().convertToFormat(QImage.Format.Format_RGBA8888)
         width = image.width()
         height = image.height()
-        try:
-            ptr = image.bits()
-            ptr.setsize(height * width * 4)
-            arr = np.frombuffer(ptr, np.uint8).reshape((height, width, 4))
-        except Exception as e:
-            print(f"Image processing error: {e}")
-            return
-
+        buffer = image.constBits()
+        buffer.setsize(image.sizeInBytes())
+        arr = np.frombuffer(buffer, np.uint8).copy().reshape((height, width, 4))  # copy() BEFORE reshape()!
         arr_rgb = arr[..., :3]
+        assert image.format() == QImage.Format.Format_RGBA8888, f"Actual QImage format: {image.format()}"
+        assert buffer and image.sizeInBytes() == width * height * 4, (
+            f"buffer length: {image.sizeInBytes()}, expected: {width * height * 4}"
+        )
 
         # Convert pixel coordinates to real coordinates
         real_width = width * scale_x
         real_height = height * scale_y
 
-        self.ax.imshow(arr_rgb, aspect='equal', extent=[-real_width/2, real_width/2, real_height/2, -real_width/2], origin='lower')
+        self.ax.imshow(arr_rgb, aspect='equal',
+                       extent=[-real_width / 2, real_width / 2, -real_height/2, real_height/2], origin='lower')
         im = self.ax.imshow(intensity_array, cmap=cmap, alpha=alpha,
                             interpolation=interpolation,
-                            extent=[-real_width/2, real_width/2, real_height/2, -real_width/2],
+                            extent=[-real_width / 2, real_width / 2, -real_height/2, real_height/2],
                             origin='lower',
                             vmin=vmin, vmax=vmax)
 
-        #self.ax.set_xlim([0, real_width])
-        #self.ax.set_ylim([real_height, 0])
-        self.ax.set_xlim([-real_width/2, real_width/2])
-        self.ax.set_ylim([real_height/2, -real_width/2])
-
+        self.ax.set_xlim([-real_width / 2, real_width / 2])
+        self.ax.set_ylim([real_height / 2, -real_width / 2])
 
         # Set axis labels with units
         self.ax.set_xlabel(f"Distance ({distance_units})", fontsize=15, fontweight='bold')
         self.ax.set_ylabel(f"Distance ({distance_units})", fontsize=15, fontweight='bold')
 
         self.cbar = self.figure.colorbar(im, ax=self.ax, orientation='vertical', pad=0.05)
-        #self.cbar.ax.tick_params(labelsize=11)
         if units:
             self.cbar.set_label(f'Intensity ({units})', rotation=270, labelpad=20, fontsize=15, fontweight='bold')
-            #self.plot_canvas.cbar.ax.tick_params(labelsize=tick_fontsize)
-
         else:
             self.cbar.set_label('Intensity', rotation=270, labelpad=20, fontsize=15, fontweight='bold')
 
@@ -137,28 +119,34 @@ class DraggableCanvas(FigureCanvasQTAgg):
                       alpha=0.6, cmap='jet', levels=6,
                       interpolation='bilinear', units='', extend='neither',
                       scale_x=1.0, scale_y=1.0, distance_units='pixels'):
-        self.ax.clear()
+        self.figure.clf()
         if self.cbar is not None:
-            self.cbar.remove()
+            try:
+                self.cbar.remove()
+            except Exception as e:
+                print(f"Colorbar remove exception: {e!r}")
             self.cbar = None
+        self.ax = self.figure.add_subplot(111)
 
-        image = base_img.toImage()
+        # SAFE IMAGE CONVERSION - CRITICAL FIX: copy() BEFORE reshape()
+        image = base_img.toImage().convertToFormat(QImage.Format.Format_RGBA8888)
         width = image.width()
         height = image.height()
-        ptr = image.bits()
-        ptr.setsize(height * width * 4)
-        arr = np.frombuffer(ptr, np.uint8).reshape((height, width, 4))
+        buffer = image.constBits()
+        buffer.setsize(image.sizeInBytes())
+        arr = np.frombuffer(buffer, np.uint8).copy().reshape((height, width, 4))  # copy() BEFORE reshape()!
         arr_rgb = arr[..., :3]
 
         # Convert pixel coordinates to real coordinates
         real_width = width * scale_x
         real_height = height * scale_y
 
-        self.ax.imshow(arr_rgb, aspect='equal', extent=[-real_width/2, real_width/2, -real_height/2, real_width/2], origin='lower')
+        self.ax.imshow(arr_rgb, aspect='equal',
+                       extent=[-real_width / 2, real_width / 2, -real_height / 2, real_width / 2], origin='lower')
 
         rows, cols = intensity_array.shape
-        X = np.linspace(-real_width/2, real_width/2, cols)
-        Y = np.linspace(-real_height/2, real_height/2, rows)
+        X = np.linspace(-real_width / 2, real_width / 2, cols)
+        Y = np.linspace(-real_height / 2, real_height / 2, rows)
         xx, yy = np.meshgrid(X, Y)
 
         if isinstance(levels, int):
@@ -174,8 +162,8 @@ class DraggableCanvas(FigureCanvasQTAgg):
             extend='max'
         )
 
-        self.ax.set_xlim([-real_width/2, real_width/2])
-        self.ax.set_ylim([real_height/2, -real_width/2])
+        self.ax.set_xlim([-real_width / 2, real_width / 2])
+        self.ax.set_ylim([real_height / 2, -real_width / 2])
 
         # Set axis labels with units
         self.ax.set_xlabel(f"Distance ({distance_units})", fontsize=17, fontweight='bold')
@@ -185,33 +173,51 @@ class DraggableCanvas(FigureCanvasQTAgg):
         if units:
             self.cbar.set_label(f'Intensity ({units})', rotation=270, labelpad=15, fontsize=14, fontweight='bold')
             self.cbar.ax.tick_params(labelsize=13)
-
         else:
             self.cbar.set_label('Intensity', rotation=270, labelpad=15, fontsize=14, fontweight='bold')
             self.cbar.ax.tick_params(labelsize=13)
 
         self.draw()
 
+    def closeEvent(self, event):
+        """Proper cleanup when canvas is closed"""
+        try:
+            if self.cbar is not None:
+                try:
+                    self.cbar.remove()
+                except Exception as e:
+                    print(f"Colorbar remove exception: {e!r}")
+                self.cbar = None
+            self.figure.clear()
+            plt.close(self.figure)
+        except:
+            pass  # Ignore cleanup errors
+        super().closeEvent(event)
+
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Radiation Protection Scatter Map Generator")
-        self.resize(100, 100)  # Set your preferred width and height here
-
-        # --- Caching for efficiency ---
+        # ---- Attributes (MUST be first!) ----
+        self.current_pixmap = None
+        self.intensity_data = None
+        self.alpha = 0.6
+        self.cmap = "jet"
+        self._current_vis_mode = "heatmap"
+        self.cached_intensity_array = None
         self.last_csv_data = None
         self.last_csv_shape = None
         self.last_pixmap_size = None
-        self.cached_intensity_array = None
-
+        # ---- GUI Construction ----
+        self.setWindowTitle("Radiation Protection Scatter Map Generator")
+        self.resize(1400, 900)
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
         self.tab_widget = QTabWidget()
         main_layout.addWidget(self.tab_widget)
 
-        # Tab 1: Image
+        # --- Tab 1: Image ---
         self.image_label = QLabel("No Image Loaded")
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         img_tab_layout = QHBoxLayout()
@@ -228,10 +234,10 @@ class MainWindow(QMainWindow):
         img_tab.setLayout(img_tab_layout)
         self.tab_widget.addTab(img_tab, "Image")
 
-        # Tab 2: Intensity Data
+        # --- Tab 2: Intensity Data ---
         self.table_widget = QTableWidget()
         self.table_widget.setEditTriggers(QTableWidget.EditTrigger.AllEditTriggers)
-        self.table_widget.cellChanged.connect(self.invalidate_cache)  # Efficient cache invalidation
+        self.table_widget.cellChanged.connect(self.invalidate_cache)
         intensity_layout = QHBoxLayout()
         intensity_left = QVBoxLayout()
         intensity_left.addWidget(self.table_widget)
@@ -240,17 +246,39 @@ class MainWindow(QMainWindow):
         btn_load_csv = QPushButton("Load CSV/Excel")
         btn_load_csv.clicked.connect(self.load_csv_excel)
         intensity_right.addWidget(btn_load_csv)
+        btn_paste_clipboard = QPushButton("Paste from Clipboard (Excel)")
+        btn_paste_clipboard.clicked.connect(self.paste_clipboard_data)
+        intensity_right.addWidget(btn_paste_clipboard)
         btn_add_row = QPushButton("Add Row")
         btn_add_row.clicked.connect(self.add_row)
         intensity_right.addWidget(btn_add_row)
         btn_remove_row = QPushButton("Remove Row")
         btn_remove_row.clicked.connect(self.remove_row)
         intensity_right.addWidget(btn_remove_row)
+        btn_add_column = QPushButton("Add Column")
+        btn_add_column.clicked.connect(self.add_column)
+        intensity_right.addWidget(btn_add_column)
+        btn_remove_column = QPushButton("Remove Column")
+        btn_remove_column.clicked.connect(self.remove_column)
+        intensity_right.addWidget(btn_remove_column)
         intensity_right.addStretch(1)
-        intensity_layout.addLayout(intensity_right, stretch=1)
+
+        # -- Preview Mode and Box --
+        self.preview_mode_combo = QComboBox()
+        self.preview_mode_combo.addItems(["Heatmap", "Contour Map"])
+        intensity_right.addWidget(QLabel("Preview Mode:"))
+        intensity_right.addWidget(self.preview_mode_combo)
+        self.preview_canvas = FigureCanvasQTAgg(Figure(figsize=(2, 2)))
+        self.preview_canvas.setMinimumSize(150, 150)
+        intensity_right.addWidget(self.preview_canvas)
+        self.preview_mode_combo.currentTextChanged.connect(self.update_intensity_preview)
+        # No redundant connects for row/column/buttons; explicit call below
+
         intensity_tab = QWidget()
         intensity_tab.setLayout(intensity_layout)
+        intensity_layout.addLayout(intensity_right, stretch=1)
         self.tab_widget.addTab(intensity_tab, "Intensity Data")
+        self.update_intensity_preview()
 
         # Tab 3: Blended
         self.plot_canvas = DraggableCanvas(self)
@@ -309,7 +337,8 @@ class MainWindow(QMainWindow):
 
         # Color map selection
         self.cmap_combo = QComboBox()
-        self.cmap_combo.addItems(["jet", "viridis", "plasma", "inferno", "magma", "cividis", "coolwarm", "YlGnBu", "Reds", "Accent"])
+        self.cmap_combo.addItems(
+            ["jet", "viridis", "plasma", "inferno", "magma", "cividis", "coolwarm", "YlGnBu", "Reds", "Accent"])
         self.cmap_combo.addItem("Threat Zones (7)")
         self.cmap_combo.addItem("Dose Field (7)")
         self.cmap_combo.setCurrentText("jet")
@@ -334,7 +363,7 @@ class MainWindow(QMainWindow):
         highlight_group.setLayout(highlight_layout)
         blend_right.addWidget(highlight_group)
 
-        #custom colour scale
+        # custom colour scale
         custom_scale_group = QGroupBox("Custom Color Scale")
         custom_layout = QVBoxLayout()
         self.custom_levels_input = QLineEdit()
@@ -396,7 +425,6 @@ class MainWindow(QMainWindow):
         self.label_fontsize_spin.setRange(6, 24)
         self.label_fontsize_spin.setValue(12)
         font_layout.addWidget(self.label_fontsize_spin)
-
         font_layout.addWidget(QLabel("Tick Font Size:"))
         self.tick_fontsize_spin = QDoubleSpinBox()
         self.tick_fontsize_spin.setRange(6, 20)
@@ -457,6 +485,16 @@ class MainWindow(QMainWindow):
         self.grid_type_combo.addItems(["Points", "Dotted Lines"])
         grid_right.addWidget(QLabel("Grid Type:"))
         grid_right.addWidget(self.grid_type_combo)
+        self.grid_nx_spin = QSpinBox()
+        self.grid_nx_spin.setRange(1, 200)
+        self.grid_nx_spin.setValue(20)
+        self.grid_nx_spin.setPrefix("Columns: ")
+        self.grid_ny_spin = QSpinBox()
+        self.grid_ny_spin.setRange(1, 200)
+        self.grid_ny_spin.setValue(20)
+        self.grid_ny_spin.setPrefix("Rows: ")
+        grid_right.addWidget(self.grid_nx_spin)
+        grid_right.addWidget(self.grid_ny_spin)
         btn_show_grid = QPushButton("Show Grid Overlay")
         btn_show_grid.clicked.connect(self.show_grid_overlay)
         grid_right.addWidget(btn_show_grid)
@@ -466,13 +504,12 @@ class MainWindow(QMainWindow):
         grid_right.addStretch(1)
         grid_layout.addLayout(grid_right, stretch=1)
         grid_tab.setLayout(grid_layout)
+        self.grid_nx_spin.valueChanged.connect(self.show_grid_overlay)
+        self.grid_ny_spin.valueChanged.connect(self.show_grid_overlay)
         self.tab_widget.addTab(grid_tab, "Grid Overlay")
 
-        self.current_pixmap = None
-        self.intensity_data = None
-        self.alpha = 0.6
-        self.cmap = "jet"
-        self._current_vis_mode = "heatmap"
+
+
 
     # --- Data and Image Loading ---
     def apply_formatting(self):
@@ -504,13 +541,12 @@ class MainWindow(QMainWindow):
 
         # Apply to tick labels
         self.plot_canvas.ax.tick_params(axis='both', which='major', labelsize=tick_fontsize)
-        # self.cbar.ax.tick_params(labelsize=tick_fontsize)
-        self.plot_canvas.cbar.ax.tick_params(labelsize=tick_fontsize)
+        if hasattr(self.plot_canvas, 'cbar') and self.plot_canvas.cbar is not None:
+            self.plot_canvas.cbar.ax.tick_params(labelsize=tick_fontsize)
 
         # Set number of ticks
         xlim = self.plot_canvas.ax.get_xlim()
         ylim = self.plot_canvas.ax.get_ylim()
-
         x_tick_positions1 = np.linspace(xlim[0], xlim[1], x_ticks)
         y_tick_positions1 = np.linspace(ylim[0], ylim[1], y_ticks)
 
@@ -539,7 +575,6 @@ class MainWindow(QMainWindow):
             self.plot_canvas.cbar.ax.yaxis.label.set_fontsize(label_fontsize)
             self.plot_canvas.cbar.ax.yaxis.label.set_fontweight(fontweight)
             self.plot_canvas.cbar.ax.yaxis.label.set_fontstyle(fontstyle)
-            # self.plot_canvas.cbar.ax.tick_params(labelsize=tick_fontsize - 1)
             self.plot_canvas.cbar.ax.tick_params(labelsize=tick_fontsize)
 
         self.plot_canvas.draw()
@@ -551,7 +586,6 @@ class MainWindow(QMainWindow):
 
         try:
             levels = [float(x.strip()) for x in self.custom_levels_input.text().split(',')]
-            #levels = [0, 200, 500, 1000, 6000, 15000]
             if not 2 <= len(levels) <= 7:
                 raise ValueError("Enter 2-7 values")
 
@@ -577,6 +611,19 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.warning(self, "Error", f"Invalid input: {str(e)}")
 
+
+    def set_grid_spinboxes_from_data(self):
+        """Set grid subdivision spinboxes to match intensity data shape, or 100x100 if data is empty."""
+        current_rows = self.table_widget.rowCount()
+        current_cols = self.table_widget.columnCount()
+        if hasattr(self, "grid_nx_spin") and hasattr(self, "grid_ny_spin"):
+            if current_rows > 0 and current_cols > 0:
+                self.grid_nx_spin.setValue(current_cols)
+                self.grid_ny_spin.setValue(current_rows)
+            else:
+                self.grid_nx_spin.setValue(100)
+                self.grid_ny_spin.setValue(100)
+
     def load_image(self):
         file_name, _ = QFileDialog.getOpenFileName(self, "Open Image", "", "Image Files (*.png *.jpg *.bmp)")
         if file_name:
@@ -584,6 +631,8 @@ class MainWindow(QMainWindow):
             self.image_label.setPixmap(self.current_pixmap)
             self.image_label.setScaledContents(True)
             self.invalidate_cache()
+            self.update_intensity_preview()
+            self.set_grid_spinboxes_from_data()
 
     def load_csv_excel(self):
         file_name, _ = QFileDialog.getOpenFileName(self, "Open File", "", "CSV Files (*.csv);;Excel Files (*.xls *.xlsx)")
@@ -595,38 +644,110 @@ class MainWindow(QMainWindow):
                     df = pd.read_excel(file_name, header=None)
                 data = df.values
                 rows, cols = data.shape
+                self.table_widget.blockSignals(True)
                 self.table_widget.setRowCount(rows)
                 self.table_widget.setColumnCount(cols)
                 for r in range(rows):
                     for c in range(cols):
-                        item = QTableWidgetItem(str(data[r, c]))
-                        self.table_widget.setItem(r, c, item)
+                        self.table_widget.setItem(r, c, QTableWidgetItem(str(data[r, c])))
+                self.table_widget.blockSignals(False)
                 self.intensity_data = data
                 self.invalidate_cache()
+                self.update_intensity_preview()
+                self.set_grid_spinboxes_from_data()
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Could not load file.\n{str(e)}")
 
+    def update_intensity_preview(self):
+        intensity = self.get_intensity_array()
+        fig = self.preview_canvas.figure
+        fig.clf()
+        ax = fig.add_subplot(111)
+        if intensity is None or intensity.size == 0:
+            ax.text(0.5, 0.5, "No Data", ha='center', va='center')
+            ax.axis('off')
+            self.preview_canvas.draw()
+            return
+        mode = self.preview_mode_combo.currentText()
+        cmap = 'jet'
+        try:
+            if mode == "Contour Map":
+                levels = 7
+                ax.contourf(intensity, levels=levels, cmap=cmap)
+            else:
+                ax.imshow(intensity, cmap=cmap, aspect='auto')
+        except Exception as e:
+            ax.text(0.5, 0.5, f"Error: {str(e)}", ha='center', va='center', color='red')
+        ax.axis('off')
+        fig.tight_layout()
+        self.preview_canvas.draw()
+
+    def paste_clipboard_data(self):
+        clipboard = QApplication.clipboard()
+        text = clipboard.text()
+        if text:
+            rows = [r for r in text.split('\n') if r.strip()]
+            data = [r.split('\t') for r in rows]
+            row_count = len(data)
+            col_count = max(len(row) for row in data) if row_count > 0 else 0
+            self.table_widget.blockSignals(True)
+            self.table_widget.setRowCount(row_count)
+            self.table_widget.setColumnCount(col_count)
+            for r, row in enumerate(data):
+                for c, val in enumerate(row):
+                    try:
+                        num_val = float(val)
+                    except ValueError:
+                        num_val = 0.0
+                    self.table_widget.setItem(r, c, QTableWidgetItem(str(num_val)))
+            self.table_widget.blockSignals(False)
+            self.invalidate_cache()
+            self.update_intensity_preview()
+            self.set_grid_spinboxes_from_data()
+
     def add_row(self):
-        current_rows = self.table_widget.rowCount()
-        self.table_widget.insertRow(current_rows)
+        self.table_widget.insertRow(self.table_widget.rowCount())
         self.invalidate_cache()
+        self.update_intensity_preview()
+        self.set_grid_spinboxes_from_data()
 
     def remove_row(self):
-        current_rows = self.table_widget.rowCount()
-        if current_rows > 0:
-            self.table_widget.removeRow(current_rows - 1)
+        if self.table_widget.rowCount() > 0:
+            self.table_widget.removeRow(self.table_widget.rowCount() - 1)
             self.invalidate_cache()
+            self.update_intensity_preview()
+            self.set_grid_spinboxes_from_data()
+
+    def add_column(self):
+        self.table_widget.insertColumn(self.table_widget.columnCount())
+        self.invalidate_cache()
+        self.update_intensity_preview()
+        self.set_grid_spinboxes_from_data()
+
+    def remove_column(self):
+        if self.table_widget.columnCount() > 0:
+            self.table_widget.removeColumn(self.table_widget.columnCount() - 1)
+            self.invalidate_cache()
+            self.update_intensity_preview()
+            self.set_grid_spinboxes_from_data()
 
     def invalidate_cache(self):
         self.cached_intensity_array = None
         self.last_csv_data = None
         self.last_csv_shape = None
         self.last_pixmap_size = None
+        import gc
+        gc.collect()
 
     def get_intensity_array(self):
-        # Check if cache is valid
+        # Safe for empty/partial table, avoids zero-divide/zoom crash
         rows = self.table_widget.rowCount()
         cols = self.table_widget.columnCount()
+        if rows == 0 or cols == 0:
+            self.cached_intensity_array = None
+            self.last_csv_data = []
+            self.last_pixmap_size = (self.current_pixmap.width(), self.current_pixmap.height()) if self.current_pixmap else None
+            return None
         current_data = []
         for r in range(rows):
             row = []
@@ -637,21 +758,51 @@ class MainWindow(QMainWindow):
         pixmap_size = (self.current_pixmap.width(), self.current_pixmap.height()) if self.current_pixmap else None
         if (self.cached_intensity_array is not None and
             self.last_csv_data == current_data and
-                self.last_pixmap_size == pixmap_size):
+            self.last_pixmap_size == pixmap_size):
             return self.cached_intensity_array
         arr = np.array(current_data, dtype=float)
-        if self.current_pixmap:
-            target_height = self.current_pixmap.height()
-            target_width = self.current_pixmap.width()
-            zoom_y = target_height / arr.shape[0]
-            zoom_x = target_width / arr.shape[1]
-            arr_resized = zoom(arr, (zoom_y, zoom_x), order=1)
+        if self.current_pixmap is not None and arr.size > 0 and arr.shape[0] > 0 and arr.shape[1] > 0:
+            target_height = max(1, self.current_pixmap.height())
+            target_width = max(1, self.current_pixmap.width())
+            zoom_y = target_height / float(arr.shape[0])
+            zoom_x = target_width / float(arr.shape[1])
+            try:
+                arr_resized = zoom(arr, (zoom_y, zoom_x), order=1)
+            except Exception:
+                rep_y = max(1, int(np.ceil(zoom_y)))
+                rep_x = max(1, int(np.ceil(zoom_x)))
+                arr_resized = np.repeat(np.repeat(arr, rep_y, axis=0), rep_x, axis=1)
+                arr_resized = arr_resized[:target_height, :target_width]
             self.cached_intensity_array = arr_resized
         else:
             self.cached_intensity_array = arr
         self.last_csv_data = current_data
         self.last_pixmap_size = pixmap_size
         return self.cached_intensity_array
+
+    def update_intensity_preview(self):
+        intensity = self.get_intensity_array()
+        fig = self.preview_canvas.figure
+        fig.clf()
+        ax = fig.add_subplot(111)
+        if intensity is None or intensity.size == 0:
+            ax.text(0.5, 0.5, "No Data", ha='center', va='center')
+            ax.axis('off')
+            self.preview_canvas.draw()
+            return
+        mode = self.preview_mode_combo.currentText()
+        cmap = 'jet'
+        try:
+            if mode == "Contour Map":
+                levels = 7
+                ax.contourf(intensity, levels=levels, cmap=cmap)
+            else:
+                ax.imshow(intensity, cmap=cmap, aspect='auto')
+        except Exception as e:
+            ax.text(0.5, 0.5, f"Error: {str(e)}", ha='center', va='center', color='red')
+        ax.axis('off')
+        fig.tight_layout()
+        self.preview_canvas.draw()
 
     # --- Visualization Controls ---
     def update_alpha(self):
@@ -699,52 +850,71 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Warning", "Load an image and some intensity data first.")
             return
 
-        intens = self.get_intensity_array()
-        intensity_units = self.intensity_unit_input.text()
-        distance_units = self.scale_unit_input.text()
-        scale_x = float(self.scale_x_input.text()) if self.scale_x_input.text() else 1.0
-        scale_y = float(self.scale_y_input.text()) if self.scale_y_input.text() else 1.0
+        try:
+            intens = self.get_intensity_array()
+            if intens is None or intens.size == 0:
+                QMessageBox.warning(self, "Warning", "Invalid intensity data.")
+                return
 
-        self._current_vis_mode = "heatmap"
-        self.vmin_spin.setValue(np.min(intens))
-        self.vmax_spin.setValue(np.max(intens))
+            intensity_units = self.intensity_unit_input.text()
+            distance_units = self.scale_unit_input.text()
+            scale_x = float(self.scale_x_input.text()) if self.scale_x_input.text() else 1.0
+            scale_y = float(self.scale_y_input.text()) if self.scale_y_input.text() else 1.0
 
-        self.plot_canvas.draw_heatmap(
-            self.current_pixmap, intens,
-            alpha=self.alpha, cmap=self.cmap,
-            vmin=self.vmin_spin.value(), vmax=self.vmax_spin.value(),
-            units=intensity_units,
-            scale_x=scale_x, scale_y=scale_y, distance_units=distance_units
-        )
+
+            self.vmin_spin.setValue(np.min(intens))
+            self.vmax_spin.setValue(np.max(intens))
+
+            self.plot_canvas.draw_heatmap(
+                self.current_pixmap, intens,
+                alpha=self.alpha, cmap=self.cmap,
+                vmin=self.vmin_spin.value(), vmax=self.vmax_spin.value(),
+                units=intensity_units,
+                scale_x=scale_x, scale_y=scale_y, distance_units=distance_units
+            )
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to generate heatmap: {str(e)}")
+            import traceback
+            traceback.print_exc()
 
     def show_contours(self):
         if not self.current_pixmap or self.table_widget.rowCount() == 0:
             QMessageBox.warning(self, "Warning", "Load an image and some intensity data first.")
             return
 
-        intens = self.get_intensity_array()
-        intensity_units = self.intensity_unit_input.text()
-        distance_units = self.scale_unit_input.text()
-        scale_x = float(self.scale_x_input.text()) if self.scale_x_input.text() else 1.0
-        scale_y = float(self.scale_y_input.text()) if self.scale_y_input.text() else 1.0
+        try:
+            intens = self.get_intensity_array()
+            if intens is None or intens.size == 0:
+                QMessageBox.warning(self, "Warning", "Invalid intensity data.")
+                return
 
-        vmin = self.vmin_spin.value()
-        vmax = self.vmax_spin.value()
+            intensity_units = self.intensity_unit_input.text()
+            distance_units = self.scale_unit_input.text()
+            scale_x = float(self.scale_x_input.text()) if self.scale_x_input.text() else 1.0
+            scale_y = float(self.scale_y_input.text()) if self.scale_y_input.text() else 1.0
 
-        if isinstance(self.cmap, ListedColormap) and self.cmap.name in ['threat_zones', 'dose_field']:
-            num_levels = 7
-        else:
-            num_levels = 20
-        levels = np.linspace(vmin, vmax, num_levels)
-        self._current_vis_mode = "contour"
+            vmin = self.vmin_spin.value()
+            vmax = self.vmax_spin.value()
 
-        self.plot_canvas.draw_contours(
-            self.current_pixmap, intens,
-            alpha=self.alpha, cmap=self.cmap,
-            levels=levels, units=intensity_units,
-            scale_x=scale_x, scale_y=scale_y, distance_units=distance_units,
-        )
+            if isinstance(self.cmap, ListedColormap) and self.cmap.name in ['threat_zones', 'dose_field']:
+                num_levels = 7
+            else:
+                num_levels = 20
+            levels = np.linspace(vmin, vmax, num_levels)
+            self._current_vis_mode = "contour"
 
+            self.plot_canvas.draw_contours(
+                self.current_pixmap, intens,
+                alpha=self.alpha, cmap=self.cmap,
+                levels=levels, units=intensity_units,
+                scale_x=scale_x, scale_y=scale_y, distance_units=distance_units,
+            )
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to generate contours: {str(e)}")
+            import traceback
+            traceback.print_exc()
 
     def apply_highlights(self):
         if not self.current_pixmap or self.table_widget.rowCount() == 0:
@@ -782,7 +952,8 @@ class MainWindow(QMainWindow):
                 self.plot_canvas.ax.legend(handles=legend_handles, loc='best')
             self.plot_canvas.draw()
         except ValueError as e:
-            QMessageBox.warning(self, "Warning", f"Invalid highlight values: {str(e)}\nPlease enter comma-separated numbers.")
+            QMessageBox.warning(self, "Warning",
+                                f"Invalid highlight values: {str(e)}\nPlease enter comma-separated numbers.")
 
     def apply_units_and_scale(self):
         try:
@@ -902,35 +1073,55 @@ class MainWindow(QMainWindow):
         if not self.current_pixmap:
             QMessageBox.warning(self, "Warning", "Load an image first.")
             return
-        image = self.current_pixmap.toImage()
-        width = image.width()
-        height = image.height()
-        ptr = image.bits()
-        ptr.setsize(height * width * 4)
-        arr = np.frombuffer(ptr, np.uint8).reshape((height, width, 4))
-        arr_rgb = arr[..., :3]
-        self.grid_canvas.ax.clear()
-        self.grid_canvas.ax.imshow(arr_rgb, aspect='equal', extent=[0, width, 0, height], origin='lower')
-        rows, cols = 20, 20
-        x = np.linspace(0, width, cols + 1)
-        y = np.linspace(0, height, rows + 1)
-        if self.grid_type_combo.currentText() == "Points":
-            xx, yy = np.meshgrid(x, y)
-            self.grid_canvas.ax.plot(xx, yy, 'r.', markersize=2)
-        else:  # Dotted Lines
-            for xi in x:
-                self.grid_canvas.ax.plot([xi, xi], [0, height], 'r:', linewidth=0.5)
-            for yi in y:
-                self.grid_canvas.ax.plot([0, width], [yi, yi], 'r:', linewidth=0.5)
-        self.grid_canvas.ax.set_xlim([0, width])
-        self.grid_canvas.ax.set_ylim([height, 0])
-        self.grid_canvas.draw()
+        try:
+            image = self.current_pixmap.toImage().convertToFormat(QImage.Format.Format_RGBA8888)
+            width = image.width()
+            height = image.height()
+            buffer = image.constBits()
+            buffer.setsize(image.sizeInBytes())
+            arr = np.frombuffer(buffer, np.uint8).copy().reshape((height, width, 4))
+            arr_rgb = arr[..., :3]
+            self.grid_canvas.ax.clear()
+            self.grid_canvas.ax.imshow(arr_rgb, aspect='equal', extent=[0, width, 0, height], origin='lower')
+
+            # Always read spinbox values!
+            cols = self.grid_nx_spin.value()
+            rows = self.grid_ny_spin.value()
+
+            x = np.linspace(0, width, cols + 1)
+            y = np.linspace(0, height, rows + 1)
+            if self.grid_type_combo.currentText() == "Points":
+                xx, yy = np.meshgrid(x, y)
+                self.grid_canvas.ax.plot(xx, yy, 'r.', markersize=2)
+            else:
+                for xi in x:
+                    self.grid_canvas.ax.plot([xi, xi], [0, height], 'r:', linewidth=0.5)
+                for yi in y:
+                    self.grid_canvas.ax.plot([0, width], [yi, yi], 'r:', linewidth=0.5)
+            self.grid_canvas.ax.set_xlim([0, width])
+            self.grid_canvas.ax.set_ylim([0, height])
+            self.grid_canvas.draw()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to show grid overlay: {str(e)}")
+            import traceback
+            traceback.print_exc()
 
     def closeEvent(self, event):
-        if hasattr(self, 'plot_canvas') and self.plot_canvas.figure:
-            plt.close(self.plot_canvas.figure)
-        if hasattr(self, 'grid_canvas') and self.grid_canvas.figure:
-            plt.close(self.grid_canvas.figure)
+        """Proper cleanup on window close"""
+        try:
+            if hasattr(self, 'plot_canvas') and self.plot_canvas.figure:
+                self.plot_canvas.figure.clear()
+                plt.close(self.plot_canvas.figure)
+            if hasattr(self, 'grid_canvas') and self.grid_canvas.figure:
+                self.grid_canvas.figure.clear()
+                plt.close(self.grid_canvas.figure)
+        except:
+            pass  # Ignore cleanup errors
+
+        # Force garbage collection
+        import gc
+        gc.collect()
+
         super().closeEvent(event)
 
 
