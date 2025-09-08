@@ -1,0 +1,654 @@
+import sys
+import os
+import numpy as np
+import imageio
+import pydicom
+from pydicom.dataset import FileDataset
+import pyqtgraph as pg
+import pyqtgraph.exporters
+from pylinac import LeedsTOR
+from PyQt6.QtWidgets import (
+    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QFileDialog,
+    QLabel, QInputDialog, QListWidget, QLineEdit, QSplitter, QListWidgetItem
+)
+from PyQt6.QtCore import Qt
+import tempfile
+import datetime
+import pandas as pd
+from pathlib import Path
+import pylinac
+import json
+import matplotlib.pyplot as plt
+from dataclasses import asdict
+
+def excepthook(type, value, tback):
+    import traceback
+    traceback.print_exception(type, value, tback)
+    sys.exit(1)
+sys.excepthook = excepthook
+
+def prompt_pixel_size(parent=None, default_px=0.2):
+    val, ok = QInputDialog.getDouble(
+        parent, "Pixel Size",
+        "Enter pixel size (mm/pixel):", value=default_px, min=0.01, max=10.0, decimals=3
+    )
+    return val if ok else default_px
+
+def prompt_sid(parent=None, default_sid=1000.0):
+    val, ok = QInputDialog.getDouble(
+        parent, "SID Entry",
+        "Enter Source-to-Image Distance (mm):",
+        value=default_sid, min=100.0, max=5000.0, decimals=1
+    )
+    return val if ok else default_sid
+
+def prompt_roi_shape(parent, label="Choose ROI Shape"):
+    shapes = ["Rectangle", "Ellipse"]
+    shape, ok = QInputDialog.getItem(
+        parent, label, "ROI Shape:", shapes, 0, False
+    )
+    return shape if ok else "Rectangle"
+
+def save_full_image_to_dicom(img_arr, out_path, reference_dicom_path=None, px_spacing=None, sid=1000.0):
+    orig_arr = img_arr.copy()
+    if np.issubdtype(orig_arr.dtype, np.floating):
+        if orig_arr.max() <= 1.01:
+            arr = (orig_arr * 65535).astype(np.uint16)
+        else:
+            arr = orig_arr.astype(np.uint16)
+    else:
+        arr = orig_arr.astype(np.uint16)
+    if reference_dicom_path:
+        ref_ds = pydicom.dcmread(reference_dicom_path, force=True)
+        ds = FileDataset(out_path, {}, file_meta=ref_ds.file_meta, preamble=b"\0" * 128)
+        for elem in [
+            'PatientName', 'PatientID', 'StudyInstanceUID', 'SeriesInstanceUID',
+            'StudyDate', 'Modality', 'StudyTime', 'Manufacturer'
+        ]:
+            if elem in ref_ds:
+                ds.add(ref_ds.data_element(elem))
+        if px_spacing is not None:
+            ds.PixelSpacing = [str(px_spacing[0]), str(px_spacing[1])]
+        elif 'PixelSpacing' in ref_ds:
+            ds.PixelSpacing = ref_ds.PixelSpacing
+        if 'RTImageSID' in ref_ds:
+            ds.RTImageSID = ref_ds.RTImageSID
+        elif 'DistanceSourceToDetector' in ref_ds:
+            ds.RTImageSID = ref_ds.DistanceSourceToDetector
+        else:
+            ds.RTImageSID = int(float(sid))
+    else:
+        file_meta = pydicom.dataset.FileMetaDataset()
+        file_meta.MediaStorageSOPClassUID = pydicom.uid.SecondaryCaptureImageStorage
+        file_meta.MediaStorageSOPInstanceUID = pydicom.uid.generate_uid()
+        file_meta.TransferSyntaxUID = pydicom.uid.ExplicitVRLittleEndian
+        ds = FileDataset(out_path, {}, file_meta=file_meta, preamble=b"\0" * 128)
+        now = datetime.datetime.now()
+        ds.ContentDate = now.strftime('%Y%m%d')
+        ds.ContentTime = now.strftime('%H%M%S')
+        ds.Modality = "OT"
+        ds.StudyInstanceUID = pydicom.uid.generate_uid()
+        ds.SeriesInstanceUID = pydicom.uid.generate_uid()
+        ds.SOPInstanceUID = file_meta.MediaStorageSOPInstanceUID
+        ds.SOPClassUID = file_meta.MediaStorageSOPClassUID
+        ds.PatientName = "Anonymous"
+        ds.PatientID = "CropROI"
+        ds.RTImageSID = int(float(sid))
+        if px_spacing is not None:
+            ds.PixelSpacing = [str(px_spacing[0]), str(px_spacing[1])]
+    ds.Rows, ds.Columns = arr.shape
+    ds.SamplesPerPixel = 1
+    ds.PhotometricInterpretation = "MONOCHROME2"
+    ds.PixelRepresentation = 0
+    ds.BitsStored = 16
+    ds.BitsAllocated = 16
+    ds.HighBit = 15
+    ds.PixelData = arr.tobytes()
+    ds.save_as(out_path)
+
+def find_leeds_demo():
+    images_dir = Path(os.path.dirname(pylinac.__file__)) / "images"
+    if not images_dir.exists():
+        return None
+    for fname in os.listdir(images_dir):
+        if "leeds" in fname.lower() and fname.lower().endswith((".tif", ".tiff", ".dcm", ".png")):
+            return str(images_dir / fname)
+    return None
+
+class LeedsApp(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Leeds TOR 18FG - PyQt6 Analyzer")
+        self.img = None
+        self.imgpath = None
+        self.current_pixel_spacing = None
+        self.current_sid = None
+        self._roi_syncing = False
+        self.last_roi_stats = {}
+        self.dicom_tags = {}
+        self.low_contrast_threshold = 0.01  # Default threshold
+        self.high_contrast_threshold = 0.20
+        self._last_leeds = None
+        self._last_results_payload = None
+        self.setup_ui()
+
+    def setup_ui(self):
+        main_layout = QHBoxLayout()
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        # Left panel for DICOM tags
+        left_panel = QWidget()
+        left_layout = QVBoxLayout(left_panel)
+        dicom_label = QLabel("DICOM Tags:")
+        dicom_label.setStyleSheet("font-weight: bold; font-size: 12px;")
+        self.tag_search = QLineEdit()
+        self.tag_search.setPlaceholderText("Search DICOM tags...")
+        self.tag_search.textChanged.connect(self.filter_dicom_tags)
+        self.dicom_list = QListWidget()
+        self.dicom_list.setMinimumWidth(300)
+        self.dicom_list.setMaximumWidth(400)
+        left_layout.addWidget(dicom_label)
+        left_layout.addWidget(self.tag_search)
+        left_layout.addWidget(self.dicom_list)
+        # Right panel for image and controls
+        right_panel = QWidget()
+        right_layout = QVBoxLayout(right_panel)
+        self.loadBtn = QPushButton("Load Image")
+        self.demoBtn = QPushButton("Load pylinac Demo Leeds")
+        self.roiBtn = QPushButton("Add/Reset ROI")
+        self.statsBtn = QPushButton("ROI Stats (Signal/Noise, SNR/CNR, Size-Locked)")
+        self.analyzeBtn = QPushButton("Run pylinac Analysis")
+        self.exportBtn = QPushButton("Export ROI as DICOM")
+        self.csvBtn = QPushButton("Export ROI Stats as CSV")
+        self.screenshotBtn = QPushButton("Save Screenshot")
+        self.zoomInBtn = QPushButton("Zoom In")
+        self.zoomOutBtn = QPushButton("Zoom Out")
+        self.clearBtn = QPushButton("Clear")
+        self.excelAnalysisBtn = QPushButton("Export Analysis to Excel") # NEW BUTTON
+        btns = QHBoxLayout()
+        for btn in [self.loadBtn, self.demoBtn, self.roiBtn, self.statsBtn, self.analyzeBtn,
+                    self.exportBtn, self.csvBtn, self.screenshotBtn, self.zoomInBtn, self.zoomOutBtn,
+                    self.clearBtn, self.excelAnalysisBtn]:
+            btns.addWidget(btn)
+        self.imv = pg.ImageView(parent=self)
+        self.status = QLabel("Ready - Load an image to begin.")
+        right_layout.addLayout(btns)
+        right_layout.addWidget(self.imv)
+        right_layout.addWidget(self.status)
+        splitter.addWidget(left_panel)
+        splitter.addWidget(right_panel)
+        splitter.setSizes([300, 700])
+        main_layout.addWidget(splitter)
+        self.setLayout(main_layout)
+        self.roi = None
+        self.signal_roi = None
+        self.noise_roi = None
+        self.signal_label = None
+        self.noise_label = None
+        self.loadBtn.clicked.connect(self.load_image)
+        self.demoBtn.clicked.connect(self.load_demo_image)
+        self.roiBtn.clicked.connect(self.add_main_roi)
+        self.statsBtn.clicked.connect(self.roi_stats_dual)
+        self.analyzeBtn.clicked.connect(self.run_pylinac)
+        self.exportBtn.clicked.connect(self.export_roi_as_dicom)
+        self.csvBtn.clicked.connect(self.export_stats_as_csv)
+        self.screenshotBtn.clicked.connect(self.save_screenshot)
+        self.zoomInBtn.clicked.connect(self.zoom_in)
+        self.zoomOutBtn.clicked.connect(self.zoom_out)
+        self.clearBtn.clicked.connect(self.clear_all)
+        self.excelAnalysisBtn.clicked.connect(self.export_analysis_to_excel) # NEW BUTTON CONNECT
+
+    def populate_dicom_tags(self, ds):
+        self.dicom_tags = {}
+        self.dicom_list.clear()
+        for data_element in ds:
+            tag = str(data_element.tag)
+            keyword = data_element.keyword if hasattr(data_element, 'keyword') else "Unknown"
+            if hasattr(data_element, 'value'):
+                value = data_element.value
+                if isinstance(value, bytes):
+                    try:
+                        value_str = value.decode('utf-8', errors='ignore')[:100]
+                    except:
+                        value_str = ""
+                elif isinstance(value, (list, tuple)) and len(value) > 10:
+                    value_str = ""
+                else:
+                    value_str = str(value)
+                if len(value_str) > 100:
+                    value_str = value_str[:100] + "..."
+            else:
+                value_str = ""
+            tag_info = f"{tag} | {keyword}: {value_str}"
+            self.dicom_tags[tag_info.lower()] = tag_info
+            item = QListWidgetItem(tag_info)
+            self.dicom_list.addItem(item)
+        print(f"Loaded {len(self.dicom_tags)} DICOM tags")
+
+    def filter_dicom_tags(self):
+        search_text = self.tag_search.text().lower()
+        self.dicom_list.clear()
+        if not search_text:
+            for tag_info in self.dicom_tags.values():
+                item = QListWidgetItem(tag_info)
+                self.dicom_list.addItem(item)
+        else:
+            for tag_key, tag_info in self.dicom_tags.items():
+                if search_text in tag_key:
+                    item = QListWidgetItem(tag_info)
+                    self.dicom_list.addItem(item)
+
+    def clear_dicom_tags(self):
+        self.dicom_tags = {}
+        self.dicom_list.clear()
+        self.tag_search.clear()
+
+    def load_image(self):
+        self.clear_all()
+        fname, _ = QFileDialog.getOpenFileName(
+            self, "Open Image",
+            "", "Images (*.dcm *.ima *.png *.jpg *.jpeg *.tiff *.bmp *.npy);;All Files (*)"
+        )
+        if not fname:
+            self.status.setText("Image load canceled.")
+            return
+        self._load_image_core(fname)
+
+    def load_demo_image(self):
+        try:
+            lt = LeedsTOR.from_demo_image()
+            img = lt.image.array
+            self.img = img
+            self.imgpath = "LeedsTOR_Demo_FromPylinac"
+            self.current_pixel_spacing = None
+            self.current_sid = 1000.0  # Default 1000mm (100cm)
+            self.imv.setImage(self.img.T, autoRange=True, autoLevels=True, autoHistogramRange=True)
+            msg = f"Demo loaded: pylinac LeedsTOR.from_demo_image | Shape: {img.shape} | Min: {img.min():.1f}, Max: {img.max():.1f}"
+            self.status.setText(msg)
+            self.clear_rois()
+            self.clear_dicom_tags()
+            print(msg)
+        except Exception as e:
+            print(f"Demo image load failed: {e}")
+
+    def _load_image_core(self, fname, demo=False):
+        self.imgpath = fname
+        self.current_sid = 1000.0
+        try:
+            if fname.lower().endswith(('.dcm', '.ima')) or '.' not in os.path.basename(fname):
+                try:
+                    ds = pydicom.dcmread(fname)
+                except Exception as e:
+                    if "DICM" in str(e) or "File Meta Information" in str(e):
+                        print(f"Standard DICOM read failed, trying with force=True: {e}")
+                        ds = pydicom.dcmread(fname, force=True)
+                        print("Successfully read DICOM file with force=True")
+                    else:
+                        raise e
+                img = ds.pixel_array
+                px_spacing = [float(ds.PixelSpacing[0]), float(ds.PixelSpacing[1])] if 'PixelSpacing' in ds else [0.2, 0.2]
+                self.current_pixel_spacing = px_spacing
+                sid_val = None
+                if 'RTImageSID' in ds:
+                    try:
+                        sid_val = float(ds.RTImageSID)
+                        print(f"Found RTImageSID: {sid_val} mm")
+                    except Exception as e:
+                        print(f"Failed to parse RTImageSID: {e}")
+                        sid_val = None
+                elif 'DistanceSourceToDetector' in ds:
+                    try:
+                        sid_val = float(ds.DistanceSourceToDetector)
+                        print(f"Found DistanceSourceToDetector: {sid_val} mm")
+                    except Exception as e:
+                        print(f"Failed to parse DistanceSourceToDetector: {e}")
+                        sid_val = None
+                if sid_val is None or sid_val <= 0:
+                    print("No usable SID found in DICOM headers; will prompt at analysis.")
+                    sid_val = 0.0  # Don't prompt here
+                self.current_sid = float(sid_val)
+                self.current_sid = float(sid_val)
+                self.populate_dicom_tags(ds)
+            else:
+                img = imageio.imread(fname)
+                if img.ndim == 3:
+                    img = np.dot(img[..., :3], [0.299, 0.587, 0.114])
+                px_spacing = prompt_pixel_size(self, default_px=0.2)
+                self.current_pixel_spacing = [px_spacing, px_spacing]
+                self.current_sid = prompt_sid(self, default_sid=1000.0)
+                self.clear_dicom_tags()
+            self.img = img
+            self.imv.setImage(self.img.T, autoRange=True, autoLevels=True, autoHistogramRange=True)
+            msg = f"Loaded: {os.path.basename(fname)} | Shape: {img.shape} | Min: {img.min():.1f}, Max: {img.max():.1f} | SID: {self.current_sid / 10.0:.1f} cm ({self.current_sid:.1f} mm)"
+            self.status.setText(msg)
+            self.clear_rois()
+            print(msg)
+        except Exception as e:
+            print(f"Image load failed: {e}")
+            self.status.setText(f"Image load failed: {e}")
+
+    def add_main_roi(self):
+        self.clear_rois()
+        if self.img is None:
+            self.status.setText("Load an image first.")
+            return
+        h, w = self.img.shape
+        size = min(h, w) // 3
+        start_x = (w - size) // 2
+        start_y = (h - size) // 2
+        self.roi = pg.RectROI([start_x, start_y], [size, size], pen='y')
+        self.imv.getView().addItem(self.roi)
+        self.roi.setZValue(10)
+        self.roi.sigRegionChanged.connect(self.show_stats)
+        self.status.setText("ROI added. Drag/resize for live stats.")
+
+    def get_roi_array(self, roi_attr="roi"):
+        roi_obj = getattr(self, roi_attr, None)
+        if roi_obj and self.img is not None:
+            arr = roi_obj.getArrayRegion(self.img, self.imv.imageItem)
+            if arr is not None and arr.size > 0:
+                return arr.astype(float)
+        return None
+
+    def show_stats(self):
+        arr = self.get_roi_array("roi")
+        if arr is not None:
+            mean, std = np.mean(arr), np.std(arr)
+            roi_min, roi_max = arr.min(), arr.max()
+            msg = f"ROI [LIVE] Mean: {mean:.2f}, StdDev: {std:.2f}, Range: [{roi_min:.1f}, {roi_max:.1f}]"
+            self.status.setText(msg)
+            self.last_roi_stats = {"Mean": mean, "StdDev": std, "Min": roi_min, "Max": roi_max}
+            print(msg)
+        else:
+            self.status.setText("No ROI or ROI size too small.")
+            self.last_roi_stats = {}
+
+    def roi_stats_dual(self):
+        self.clear_rois()
+        if self.img is None:
+            self.status.setText("Load an image first.")
+            return
+        h, w = self.img.shape
+        size = min(h, w) // 6
+        sig_shape = prompt_roi_shape(self, "Choose Signal ROI Shape")
+        if sig_shape == "Rectangle":
+            self.signal_roi = pg.RectROI([w // 4, h // 4], [size, size], pen='g')
+            self.noise_roi = pg.RectROI([w // 2, h // 2], [size, size], pen='r')
+        else:
+            self.signal_roi = pg.EllipseROI([w // 4, h // 4], [size, size], pen='g')
+            self.noise_roi = pg.EllipseROI([w // 2, h // 2], [size, size], pen='r')
+        self.imv.getView().addItem(self.signal_roi)
+        self.imv.getView().addItem(self.noise_roi)
+        self.signal_roi.setZValue(10)
+        self.noise_roi.setZValue(10)
+        self.signal_label = pg.TextItem("Signal", color=(0, 200, 0))
+        self.noise_label = pg.TextItem("Noise", color=(255, 0, 0))
+        self.imv.getView().addItem(self.signal_label)
+        self.imv.getView().addItem(self.noise_label)
+        self.update_roi_labels()
+        self.signal_roi.sigRegionChanged.connect(self.sync_noise_to_signal)
+        self.signal_roi.sigRegionChanged.connect(self.update_signal_noise_stats)
+        self.signal_roi.sigRegionChanged.connect(self.update_roi_labels)
+        self.noise_roi.sigRegionChanged.connect(self.sync_signal_to_noise)
+        self.noise_roi.sigRegionChanged.connect(self.update_signal_noise_stats)
+        self.noise_roi.sigRegionChanged.connect(self.update_roi_labels)
+        self.status.setText("Move/resize signal & noise ROIs. Both stay same size.")
+        print("Signal and noise ROIs placed.")
+
+    def sync_signal_to_noise(self):
+        if self._roi_syncing or not (self.signal_roi and self.noise_roi):
+            return
+        self._roi_syncing = True
+        try:
+            self.signal_roi.setSize(self.noise_roi.size())
+        finally:
+            self._roi_syncing = False
+
+    def sync_noise_to_signal(self):
+        if self._roi_syncing or not (self.signal_roi and self.noise_roi):
+            return
+        self._roi_syncing = True
+        try:
+            self.noise_roi.setSize(self.signal_roi.size())
+        finally:
+            self._roi_syncing = False
+
+    def update_roi_labels(self):
+        if self.signal_roi and self.signal_label:
+            pos = self.signal_roi.pos() + self.signal_roi.size() / 2
+            self.signal_label.setPos(pos.x(), pos.y())
+        if self.noise_roi and self.noise_label:
+            pos = self.noise_roi.pos() + self.noise_roi.size() / 2
+            self.noise_label.setPos(pos.x(), pos.y())
+
+    def update_signal_noise_stats(self):
+        sig = self.get_roi_array("signal_roi")
+        noise = self.get_roi_array("noise_roi")
+        if sig is not None and noise is not None and sig.size > 0 and noise.size > 0 and sig.shape == noise.shape:
+            mean_signal = np.mean(sig)
+            mean_noise = np.mean(noise)
+            std_noise = np.std(noise)
+            cnr_snr = (mean_signal - mean_noise) / (std_noise + 1e-8)
+            msg = f"Signal ROI Mean: {mean_signal:.2f} | Noise ROI Mean: {mean_noise:.2f} | Noise ROI Std: {std_noise:.2f} | CNR/SNR: {cnr_snr:.2f} | SID: {self.current_sid / 10.0:.1f} cm"
+            if std_noise < 1e-6:
+                msg += " [Warning: noise std near zero, CNR not robust!]"
+            if cnr_snr < 0:
+                msg += " [CNR negative; confirm ROI placement!]"
+            self.status.setText(msg)
+            self.last_roi_stats = {
+                "SignalMean": mean_signal,
+                "NoiseMean": mean_noise,
+                "NoiseStd": std_noise,
+                "CNR_SNR": cnr_snr,
+                "ROI_shape": str(sig.shape),
+                "SID_mm": self.current_sid
+            }
+            print(msg)
+        else:
+            self.status.setText("Resize/move both ROIs to compute stats (and ensure same size).")
+            self.last_roi_stats = {}
+
+    def run_pylinac(self):
+        try:
+            if (self.current_sid is None) or (self.current_sid <= 0):
+                self.current_sid = prompt_sid(self, default_sid=1000.0)
+            ssd_mm = float(self.current_sid)
+            # LeedsTOR source
+            if self.imgpath == "LeedsTOR_Demo_FromPylinac":
+                tor = LeedsTOR.from_demo_image()
+            else:
+                with tempfile.NamedTemporaryFile(suffix=".dcm", delete=False) as tmpfile:
+                    fname = tmpfile.name
+                try:
+                    img_to_write = self.img
+                    if np.issubdtype(img_to_write.dtype, np.floating):
+                        if img_to_write.max() <= 1.01:
+                            img_to_write = (img_to_write * 65535).astype(np.uint16)
+                        else:
+                            img_to_write = img_to_write.astype(np.uint16)
+                    else:
+                        img_to_write = img_to_write.astype(np.uint16)
+                    px = self.current_pixel_spacing if self.current_pixel_spacing else None
+                    sid = ssd_mm  # mm
+                    ref_dicom = self.imgpath if (self.imgpath and self.imgpath.lower().endswith(('.dcm', '.ima'))) else None
+                    save_full_image_to_dicom(img_to_write, fname, reference_dicom_path=ref_dicom, px_spacing=px, sid=sid)
+                    tor = LeedsTOR(fname)
+                finally:
+                    try:
+                        os.remove(fname)
+                    except Exception:
+                        pass
+            try:
+                tor.analyze(low_contrast_threshold=self.low_contrast_threshold,
+                            high_contrast_threshold=self.high_contrast_threshold,
+                            ssd=ssd_mm)
+            except Exception as e:
+                tor.analyze(invert=True,
+                            low_contrast_threshold=self.low_contrast_threshold,
+                            high_contrast_threshold=self.high_contrast_threshold,
+                            ssd=ssd_mm)
+            tor.plot_analyzed_image(show=False, figsize=(12, 12))
+            fig = plt.gcf()
+            explainer = (
+                f"Low-contrast visibility threshold: {self.low_contrast_threshold:.4f}\n"
+                f"High-contrast rMTF threshold: {self.high_contrast_threshold:.2f}\n"
+                f"SSD: {ssd_mm/10.0:.1f} cm (SID used {ssd_mm:.0f} mm)\n"
+                f"Passing/failing ROI coloring is based on these thresholds."
+            )
+            fig.text(0.01, 0.01, explainer, ha="left", va="bottom",
+                     fontsize=10, bbox=dict(facecolor="white", alpha=0.7, edgecolor="none"))
+            plt.show()
+            # Results for Excel export
+            self._last_leeds = tor
+            self._last_results_payload = self._results_to_dict(tor)
+            self.status.setText("pylinac Leeds analysis complete.")
+            print("pylinac Leeds analysis complete.")
+        except Exception as e:
+            print("pylinac analysis failed:", e)
+            self.status.setText("pylinac analysis failed (see console).")
+
+    def _results_to_dict(self, leeds_obj):
+        # Universal results_data support
+        for kw in ("as_json", "to_json"):
+            try:
+                json_str = leeds_obj.results_data(**{kw: True})
+                return json.loads(json_str)
+            except TypeError:
+                pass
+            except Exception:
+                break
+        try:
+            rd = leeds_obj.results_data(as_dict=True)
+            if isinstance(rd, dict):
+                return rd
+        except TypeError:
+            pass
+        except Exception:
+            pass
+        try:
+            rd = leeds_obj.results_data()
+            try:
+                return asdict(rd)
+            except Exception:
+                if isinstance(rd, dict):
+                    return rd
+        except Exception:
+            pass
+        try:
+            return {"results_string": leeds_obj.results()}
+        except Exception:
+            return {}
+
+    def export_analysis_to_excel(self):
+        if not self._last_results_payload:
+            self.status.setText("No pylinac analysis data to export; run analysis first.")
+            return
+        fname, _ = QFileDialog.getSaveFileName(self, "Save Analysis to Excel", "leeds_analysis.xlsx", "Excel (*.xlsx)")
+        if not fname:
+            return
+        data = self._last_results_payload
+        summary = {}
+        for k in ["median_contrast", "median_cnr", "num_contrast_rois_seen",
+                  "phantom_center_x_y", "phantom_area", "mtf_lp_mm", "percent_integral_uniformity"]:
+            if k in data:
+                summary[k] = data[k]
+        summary["low_contrast_threshold_used"] = self.low_contrast_threshold
+        summary["high_contrast_threshold_used"] = self.high_contrast_threshold
+        summary["ssd_mm_used"] = float(self.current_sid) if (self.current_sid and self.current_sid > 0) else 1000.0
+        df_summary = pd.DataFrame([summary])
+
+        def dict_to_rows(d, keyname):
+            rows = []
+            if isinstance(d, dict):
+                for k, v in d.items():
+                    row = {keyname: k}
+                    if isinstance(v, dict):
+                        row.update(v)
+                    else:
+                        row["value"] = v
+                    rows.append(row)
+            return pd.DataFrame(rows) if rows else pd.DataFrame()
+
+        df_lc = dict_to_rows(data.get("low_contrast_rois") or data.get("lc_rois") or {}, "roi")
+        df_hc = dict_to_rows(data.get("high_contrast_rois") or data.get("hc_rois") or {}, "roi")
+        df_mtf = pd.DataFrame([data["mtf_lp_mm"]]) if isinstance(data.get("mtf_lp_mm"), dict) else pd.DataFrame()
+        with pd.ExcelWriter(fname, engine="openpyxl") as writer:
+            df_summary.to_excel(writer, sheet_name="Summary", index=False)
+            if not df_lc.empty: df_lc.to_excel(writer, sheet_name="LowContrastROIs", index=False)
+            if not df_hc.empty: df_hc.to_excel(writer, sheet_name="HighContrastROIs", index=False)
+            if not df_mtf.empty: df_mtf.to_excel(writer, sheet_name="rMTF_Summary", index=False)
+        self.status.setText(f"Exported analysis to Excel: {os.path.basename(fname)}")
+        print(f"Exported analysis to Excel: {fname}")
+
+    def export_roi_as_dicom(self):
+        arr = self.get_roi_array("roi")
+        if arr is None:
+            self.status.setText("No main ROI to export; add/reset ROI first.")
+            return
+        save_path, _ = QFileDialog.getSaveFileName(self, "Save Cropped ROI as DICOM", "", "DICOM (*.dcm)")
+        if not save_path:
+            return
+        px = self.current_pixel_spacing if self.current_pixel_spacing else [0.2, 0.2]
+        sid = self.current_sid if self.current_sid else 1000.0
+        ref_dicom = self.imgpath if (self.imgpath and self.imgpath.lower().endswith(('.dcm', '.ima'))) else None
+        save_full_image_to_dicom(arr.astype(np.uint16), save_path, reference_dicom_path=ref_dicom, px_spacing=px, sid=sid)
+        self.status.setText(
+            f"Saved ROI as DICOM (pixel: {px[0]:.3f}mm, SID: {sid / 10.0:.1f} cm): {os.path.basename(save_path)}")
+        print(f"Saved ROI as DICOM: {save_path}, PixelSpacing: {px}, SID: {sid} mm")
+
+    def export_stats_as_csv(self):
+        if not self.last_roi_stats:
+            self.status.setText("No ROI statistics to export yet.")
+            return
+        fname, _ = QFileDialog.getSaveFileName(self, "Export Stats as CSV", "roi_stats.csv", "CSV (*.csv)")
+        if fname:
+            pd.DataFrame([self.last_roi_stats]).to_csv(fname, index=False)
+            self.status.setText(f"ROI stats exported: {os.path.basename(fname)}")
+            print(f"ROI stats exported to: {fname}")
+
+    def save_screenshot(self):
+        fname, _ = QFileDialog.getSaveFileName(self, "Save Screenshot", "display.png", "PNG (*.png)")
+        if fname:
+            exporter = pg.exporters.ImageExporter(self.imv.getView())
+            exporter.export(fname)
+            self.status.setText(f"Screenshot saved: {os.path.basename(fname)}")
+            print(f"Screenshot saved: {fname}")
+
+    def zoom_in(self):
+        vb = self.imv.getView()
+        vb.scaleBy((0.8, 0.8))
+
+    def zoom_out(self):
+        vb = self.imv.getView()
+        vb.scaleBy((1.25, 1.25))
+
+    def clear_rois(self):
+        for roi_attr in ('roi', 'signal_roi', 'noise_roi'):
+            roi_obj = getattr(self, roi_attr, None)
+            if roi_obj:
+                self.imv.getView().removeItem(roi_obj)
+            setattr(self, roi_attr, None)
+        for label_attr in ('signal_label', 'noise_label'):
+            label_obj = getattr(self, label_attr, None)
+            if label_obj:
+                self.imv.getView().removeItem(label_obj)
+            setattr(self, label_attr, None)
+
+    def clear_all(self):
+        self.clear_rois()
+        self.clear_dicom_tags()
+        self.imv.clear()
+        self.img = None
+        self.imgpath = None
+        self.current_sid = None
+        self.status.setText("Cleared. Load a new image to begin.")
+
+def main():
+    pg.setConfigOption('useOpenGL', False)
+    app = QApplication(sys.argv)
+    win = LeedsApp()
+    win.resize(1600, 800)
+    win.show()
+    sys.exit(app.exec())
+
+if __name__ == '__main__':
+    main()
