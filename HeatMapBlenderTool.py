@@ -138,7 +138,7 @@ class DraggableCanvas(FigureCanvasQTAgg):
         extent = [-width / 2, width / 2, -height / 2, height / 2]
         self.original_extent = extent
 
-        self.ax.imshow(arr_rgb, aspect='equal', extent=extent, origin='lower')
+        self.ax.imshow(arr_rgb, aspect='equal', extent=extent, origin='upper')
 
         # FIXED: Apply accumulated offset to intensity overlay with proper syntax
         intensity_extent = [
@@ -148,14 +148,29 @@ class DraggableCanvas(FigureCanvasQTAgg):
             extent[3] + self.intensity_offset_y
         ]
 
-        im = self.ax.imshow(intensity_array, cmap=cmap, alpha=alpha, interpolation=interpolation,
-                            extent=intensity_extent, origin='lower', vmin=vmin, vmax=vmax)
+        # Get the colormap and configure it
+        if isinstance(cmap, str):
+            cmap_obj = plt.get_cmap(cmap).copy()
+        else:
+            cmap_obj = cmap
+
+        # Set top color (for values > vmax) to the highest color in the map
+        cmap_obj.set_over(cmap_obj(1.0))
+        top_color = list(cmap_obj(1.0))
+        top_color[3] = 1.0  # Force full opacity
+        cmap_obj.set_over(tuple(top_color))
+
+        # Set bottom color (for values < vmin) to fully transparent
+        cmap_obj.set_under((0, 0, 0, 0))  # RGBA: transparent
+
+        im = self.ax.imshow(intensity_array, cmap=cmap_obj, alpha=alpha, interpolation=interpolation,
+                            extent=intensity_extent, origin='upper', vmin=vmin, vmax=vmax)
 
         self.ax.set_xlim(extent[0], extent[1])
         self.ax.set_ylim(extent[2], extent[3])  # FIXED: Not flipped for 'lower' origin
         self._apply_axis_scaling(scale_x, scale_y, distance_units)
 
-        self.cbar = self.figure.colorbar(im, ax=self.ax, orientation='vertical', pad=0.05)
+        self.cbar = self.figure.colorbar(im, ax=self.ax, orientation='vertical', pad=0.05, extend='max')
         cbar_label = f'Intensity ({units})' if units else 'Intensity'
         self.cbar.set_label(cbar_label, rotation=270, labelpad=20, fontsize=15, fontweight='bold')
         self.draw()
@@ -178,7 +193,7 @@ class DraggableCanvas(FigureCanvasQTAgg):
         self.ax.set_ylabel(f"Distance ({distance_units})", fontsize=15, fontweight='bold')
 
     def draw_contours(self, base_img: QPixmap, intensity_array, alpha=0.6, cmap='jet', levels=6,
-                      interpolation='bilinear', units='', extend='neither', scale_x=1.0, scale_y=1.0,
+                      interpolation='bilinear', units='', extend='max', scale_x=1.0, scale_y=1.0,
                       distance_units='pixels'):
         self.figure.clf()
         if self.cbar is not None:
@@ -196,14 +211,14 @@ class DraggableCanvas(FigureCanvasQTAgg):
         arr = np.frombuffer(buffer, np.uint8).copy().reshape((height, width, 4))
         arr_rgb = arr[..., :3]
 
-        # FIXED: Use pixel coordinates for extent
+
         extent = [-width / 2, width / 2, -height / 2, height / 2]
         self.original_extent = extent
 
-        self.ax.imshow(arr_rgb, aspect='equal', extent=extent, origin='lower')
+        self.ax.imshow(arr_rgb, aspect='equal', extent=extent, origin='upper')
 
         rows, cols = intensity_array.shape
-        # FIXED: Create coordinate arrays for contour with proper element access
+
         X = np.linspace(extent[0] + self.intensity_offset_x, extent[1] + self.intensity_offset_x, cols)
         Y = np.linspace(extent[2] + self.intensity_offset_y, extent[3] + self.intensity_offset_y, rows)
         xx, yy = np.meshgrid(X, Y)
@@ -215,10 +230,24 @@ class DraggableCanvas(FigureCanvasQTAgg):
             vmin, vmax = np.min(valid_data), np.max(valid_data)
             levels = np.linspace(vmin, vmax, levels)
 
-        cs = self.ax.contourf(xx, yy, intensity_array, levels=levels, cmap=cmap, alpha=alpha, extend=extend)
+        intensity_array = np.flipud(intensity_array)
+
+        # Configure colormap for contours
+        if isinstance(cmap, str):
+            cmap_obj = plt.get_cmap(cmap).copy()
+        else:
+            cmap_obj = cmap.copy() if hasattr(cmap, 'copy') else cmap
+
+        top_color = list(cmap_obj(1.0))
+        top_color[3] = 1.0  # Force full opacity
+        cmap_obj.set_over(tuple(top_color))
+        cmap_obj.set_under((0, 0, 0, 0))  # Transparent below minimum
+
+
+        cs = self.ax.contourf(xx, yy, intensity_array, levels=levels, cmap=cmap_obj, alpha=alpha, extend='max')
 
         self.ax.set_xlim(extent[0], extent[1])
-        self.ax.set_ylim(extent[2], extent[3])  # FIXED: Not flipped
+        self.ax.set_ylim(extent[2], extent[3])
         self._apply_axis_scaling(scale_x, scale_y, distance_units)
 
         self.cbar = self.figure.colorbar(cs, ax=self.ax, orientation='vertical', pad=0.05)
@@ -1379,7 +1408,7 @@ class MainWindow(QMainWindow):
             arr_rgb = arr[..., :3]
 
             self.grid_canvas.ax.clear()
-            self.grid_canvas.ax.imshow(arr_rgb, aspect='equal', extent=[0, width, 0, height], origin='lower')
+            self.grid_canvas.ax.imshow(arr_rgb, aspect='equal', extent=[0, width, 0, height], origin='upper')
 
             # Always read spinbox values!
             cols = self.grid_nx_spin.value()
@@ -1432,3 +1461,4 @@ if __name__ == "__main__":
     window = MainWindow()
     window.show()
     sys.exit(app.exec())
+
