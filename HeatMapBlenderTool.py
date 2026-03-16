@@ -17,7 +17,7 @@ from matplotlib.colors import ListedColormap
 from matplotlib.figure import Figure
 
 from scipy.ndimage import zoom
-import fitz  # PyMuPDF
+import fitz
 import io
 from PIL import Image
 
@@ -48,7 +48,7 @@ class DraggableCanvas(FigureCanvasQTAgg):
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             self.dragging = True
-            # FIXED: Convert to data coordinates properly
+
             if self.ax.get_xlim() and self.ax.get_ylim():
                 bbox = self.ax.bbox
                 x_pixel = event.pos().x()
@@ -64,33 +64,32 @@ class DraggableCanvas(FigureCanvasQTAgg):
     def mouseMoveEvent(self, event):
         if self.dragging and self.last_mouse_pos:
             try:
-                # Convert current position to data coordinates
+
                 x_pixel = event.pos().x()
                 y_pixel = self.figure.bbox.height - event.pos().y()  # Flip Y
                 x_data, y_data = self.ax.transData.inverted().transform([x_pixel, y_pixel])
 
-                # FIXED: Calculate movement in data coordinates
-                dx = x_data - self.last_mouse_pos[0]  # Fixed: use index [0]
-                dy = y_data - self.last_mouse_pos[1]  # Fixed: use index [1]
+
+                dx = x_data - self.last_mouse_pos[0]
+                dy = y_data - self.last_mouse_pos[1]
 
                 # Update offset
                 self.intensity_offset_x += dx
                 self.intensity_offset_y += dy
 
-                # Handle both images (heatmaps) and collections (contours)
                 moved_something = False
 
-                # Handle image objects (heatmaps)
+
                 for img in self.ax.images:
                     arr = img.get_array()
                     if arr is None:
                         continue
                     if hasattr(arr, 'dtype') and arr.dtype == np.uint8:
-                        # likely the background RGB image
+
                         continue
 
                     extent = img.get_extent()
-                    # FIXED: Element-wise addition instead of tuple + float
+
                     new_extent = (extent[0] + dx, extent[1] + dx, extent[2] + dy, extent[3] + dy)
                     img.set_extent(new_extent)
                     moved_something = True
@@ -134,15 +133,15 @@ class DraggableCanvas(FigureCanvasQTAgg):
         arr = np.frombuffer(buffer, np.uint8).copy().reshape((height, width, 4))
         arr_rgb = arr[..., :3]
 
-        # FIXED: Use pixel coordinates for extent
+
         extent = [-width / 2, width / 2, -height / 2, height / 2]
         self.original_extent = extent
 
         self.ax.imshow(arr_rgb, aspect='equal', extent=extent, origin='upper')
 
-        # FIXED: Apply accumulated offset to intensity overlay with proper syntax
+
         intensity_extent = [
-            extent[0] + self.intensity_offset_x,  # Fixed: element-wise addition
+            extent[0] + self.intensity_offset_x,
             extent[1] + self.intensity_offset_x,
             extent[2] + self.intensity_offset_y,
             extent[3] + self.intensity_offset_y
@@ -167,7 +166,7 @@ class DraggableCanvas(FigureCanvasQTAgg):
                             extent=intensity_extent, origin='upper', vmin=vmin, vmax=vmax)
 
         self.ax.set_xlim(extent[0], extent[1])
-        self.ax.set_ylim(extent[2], extent[3])  # FIXED: Not flipped for 'lower' origin
+        self.ax.set_ylim(extent[2], extent[3])  
         self._apply_axis_scaling(scale_x, scale_y, distance_units)
 
         self.cbar = self.figure.colorbar(im, ax=self.ax, orientation='vertical', pad=0.05, extend='max')
@@ -226,7 +225,7 @@ class DraggableCanvas(FigureCanvasQTAgg):
         if isinstance(levels, int):
             valid_data = intensity_array[~np.isnan(intensity_array)]
             if valid_data.size == 0:
-                return  # No data to plot
+                return
             vmin, vmax = np.min(valid_data), np.max(valid_data)
             levels = np.linspace(vmin, vmax, levels)
 
@@ -257,7 +256,7 @@ class DraggableCanvas(FigureCanvasQTAgg):
         self.draw()
 
     def reset_intensity_position(self):
-        """Reset the intensity overlay to its original position"""
+
         self.intensity_offset_x = 0
         self.intensity_offset_y = 0
 
@@ -315,7 +314,7 @@ class MainWindow(QMainWindow):
         # Attributes
         self.original_pixmap = None
         self.current_pixmap = None
-        self.crop_rect = None  # NEW: Store crop area coordinates
+        self.crop_rect = None
         self.intensity_data = None
         self.alpha = 0.6
         self.cmap = "jet"
@@ -535,7 +534,7 @@ class MainWindow(QMainWindow):
         custom_scale_group.setLayout(custom_layout)
         blend_right.addWidget(custom_scale_group)
 
-        # Colormap scale controls (spinboxes only, no sliders)
+        # Colormap scale controls (spinboxes only)
         scale_controls = QHBoxLayout()
         self.vmin_spin = QDoubleSpinBox()
         self.vmin_spin.setDecimals(3)
@@ -634,6 +633,30 @@ class MainWindow(QMainWindow):
         formatting_group.setLayout(formatting_layout)
         blend_right.addWidget(formatting_group)
 
+        textbox_group = QGroupBox("Annotation Box")
+        textbox_layout = QVBoxLayout()
+
+        self.textbox_text_input = QLineEdit("Room: X, Date: 2026-03-13")
+        textbox_layout.addWidget(QLabel("Text:"))
+        textbox_layout.addWidget(self.textbox_text_input)
+
+        self.textbox_fontsize_spin = QDoubleSpinBox()
+        self.textbox_fontsize_spin.setRange(6, 32)
+        self.textbox_fontsize_spin.setValue(10)
+        textbox_layout.addWidget(QLabel("Font size:"))
+        textbox_layout.addWidget(self.textbox_fontsize_spin)
+
+        self.textbox_color_input = QLineEdit("white")
+        textbox_layout.addWidget(QLabel("Font color (name or #RRGGBB):"))
+        textbox_layout.addWidget(self.textbox_color_input)
+
+        btn_apply_textbox = QPushButton("Apply Text Box")
+        btn_apply_textbox.clicked.connect(self.apply_textbox)
+        textbox_layout.addWidget(btn_apply_textbox)
+
+        textbox_group.setLayout(textbox_layout)
+        blend_right.addWidget(textbox_group)
+
         blend_right.addStretch(1)
         blend_layout.addLayout(blend_right, stretch=1)
 
@@ -725,10 +748,10 @@ class MainWindow(QMainWindow):
                 qimg = QImage(data, pil_img.width, pil_img.height, QImage.Format.Format_RGBA8888)
                 self.original_pixmap = QPixmap.fromImage(qimg)
 
-                # Clean up
+
                 doc.close()
 
-                self.reset_image()  # Reset to default state with new image
+                self.reset_image()
                 QMessageBox.information(self, "PDF Loaded",
                                         f"First page of PDF loaded successfully.\nSize: {pil_img.width}x{pil_img.height} pixels")
 
@@ -825,30 +848,25 @@ class MainWindow(QMainWindow):
             return None
 
         if self.crop_rect:
-            # --- Cropped Logic ---
-            # 1. Create a full-size transparent array (NaN for transparency)
             full_h, full_w = self.original_pixmap.height(), self.original_pixmap.width()
             composite_array = np.full((full_h, full_w), np.nan, dtype=float)
-
-            # 2. Resize raw data to fit the crop rectangle
             crop_h, crop_w = self.crop_rect.height(), self.crop_rect.width()
             zoom_y, zoom_x = crop_h / raw_data.shape[0], crop_w / raw_data.shape[1]
 
             try:
                 resized_intensity = zoom(raw_data, (zoom_y, zoom_x), order=1)
             except Exception:
-                # Fallback method if zoom fails
                 rep_y = max(1, int(np.ceil(zoom_y)))
                 rep_x = max(1, int(np.ceil(zoom_x)))
                 resized_intensity = np.repeat(np.repeat(raw_data, rep_y, axis=0), rep_x, axis=1)
                 resized_intensity = resized_intensity[:crop_h, :crop_w]
 
-            # 3. Paste the resized data into the correct spot in the composite
+
             x, y = self.crop_rect.x(), self.crop_rect.y()
             composite_array[y : y + crop_h, x : x + crop_w] = resized_intensity
             return composite_array
         else:
-            # --- Full Image Logic ---
+
             full_h, full_w = self.original_pixmap.height(), self.original_pixmap.width()
             zoom_y, zoom_x = full_h / raw_data.shape[0], full_w / raw_data.shape[1]
             try:
@@ -1097,7 +1115,7 @@ class MainWindow(QMainWindow):
 
         if hasattr(self, '_current_vis_mode') and self._current_vis_mode == "contour":
             self.plot_canvas.draw_contours(
-                self.get_rotated_background_pixmap(),  # FIXED: was self.original_pixmap
+                self.get_rotated_background_pixmap(),  
                 final_intensity,
                 alpha=self.alpha, cmap=self.cmap,
                 levels=np.linspace(vmin, vmax, 20), units=intensity_units,
@@ -1105,7 +1123,7 @@ class MainWindow(QMainWindow):
             )
         else:
             self.plot_canvas.draw_heatmap(
-                self.get_rotated_background_pixmap(),  # FIXED: was self.original_pixmap
+                self.get_rotated_background_pixmap(),  
                 final_intensity,
                 alpha=self.alpha, cmap=self.cmap,
                 vmin=vmin, vmax=vmax, units=intensity_units,
@@ -1179,6 +1197,45 @@ class MainWindow(QMainWindow):
 
         self.plot_canvas.draw()
 
+    def apply_textbox(self):
+        # Add / update a text box in the upper-right corner of the current plot
+        if not hasattr(self.plot_canvas, "ax") or self.plot_canvas.ax is None:
+            QMessageBox.warning(self, "Warning", "Create a plot first.")
+            return
+
+        text = self.textbox_text_input.text()
+        if not text:
+            return
+
+        fontsize = self.textbox_fontsize_spin.value()
+        color = self.textbox_color_input.text().strip() or "white"
+
+        # Remove previous annotation if present
+        if hasattr(self, "corner_annotation") and self.corner_annotation is not None:
+            try:
+                self.corner_annotation.remove()
+            except Exception:
+                pass
+
+        # Axes-relative coordinates: (0,0) bottom-left, (1,1) top-right
+        self.corner_annotation = self.plot_canvas.ax.text(
+            0.98,
+            0.98,
+            text,
+            transform=self.plot_canvas.ax.transAxes,
+            ha="right",
+            va="top",
+            fontsize=fontsize,
+            color=color,
+            bbox=dict(boxstyle="round,pad=0.3",
+                      facecolor="black",
+                      alpha=0.5,
+                      edgecolor="none"),
+        )
+
+        self.plot_canvas.draw()
+
+
     def apply_custom_scale(self):
 
         if not self.original_pixmap or self.table_widget.rowCount() == 0:
@@ -1218,57 +1275,126 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Error", f"Invalid input: {str(e)}")
 
     def apply_highlights(self):
+        # --- NEW VERSION (replace entire old method) ---
 
         if not self.original_pixmap or self.table_widget.rowCount() == 0:
             QMessageBox.warning(self, "Warning", "Load an image and some intensity data first.")
             return
 
-        try:
-            highlight_text = self.highlight_input.text().strip()
-            if not highlight_text:
+        # Parse highlight values
+        highlight_text = self.highlight_input.text().strip()
+        if not highlight_text:
+            # If empty, just redraw base and exit
+            if self._current_vis_mode == "contour":
+                self.show_contours()
+            else:
                 self.show_heatmap()
-                return
+            return
 
-            highlight_values = [float(x.strip()) for x in highlight_text.split(',')]
-            final_intensity = self.get_final_intensity_array()
-            vmin = self.vmin_spin.value()
-            vmax = self.vmax_spin.value()
-            intensity_units = self.intensity_unit_input.text()
-            distance_units = self.scale_unit_input.text()
-            scale_x = float(self.scale_x_input.text()) if self.scale_x_input.text() else 1.0
-            scale_y = float(self.scale_y_input.text()) if self.scale_y_input.text() else 1.0
+        try:
+            highlight_values = [float(x.strip()) for x in highlight_text.split(",") if x.strip()]
+        except ValueError:
+            QMessageBox.warning(
+                self,
+                "Warning",
+                "Invalid highlight values. Please enter comma-separated numbers."
+            )
+            return
 
-            self.plot_canvas.draw_heatmap(
-                self.get_rotated_background_pixmap(),  # FIXED: was self.original_pixmap
+        final_intensity = self.get_final_intensity_array()
+        if final_intensity is None:
+            QMessageBox.warning(self, "Warning", "Could not generate intensity data.")
+            return
+
+        # Get plotting parameters
+        vmin = self.vmin_spin.value()
+        vmax = self.vmax_spin.value()
+        intensity_units = self.intensity_unit_input.text()
+        distance_units = self.scale_unit_input.text()
+        scale_x = float(self.scale_x_input.text()) if self.scale_x_input.text() else 1.0
+        scale_y = float(self.scale_y_input.text()) if self.scale_y_input.text() else 1.0
+
+        base_img = self.get_rotated_background_pixmap()
+
+        # --- Re-draw base plot in current mode ---
+        if self._current_vis_mode == "contour":
+            # Use more levels for a smoother base if you like
+            n_levels = 20
+            self.plot_canvas.draw_contours(
+                base_img,
                 final_intensity,
-                alpha=self.alpha, cmap=self.cmap,
-                vmin=vmin, vmax=vmax, units=intensity_units,
-                scale_x=scale_x, scale_y=scale_y, distance_units=distance_units
+                alpha=self.alpha,
+                cmap=self.cmap,
+                levels=n_levels,
+                units=intensity_units,
+                scale_x=scale_x,
+                scale_y=scale_y,
+                distance_units=distance_units,
+            )
+        else:
+            self.plot_canvas.draw_heatmap(
+                base_img,
+                final_intensity,
+                alpha=self.alpha,
+                cmap=self.cmap,
+                vmin=vmin,
+                vmax=vmax,
+                units=intensity_units,
+                scale_x=scale_x,
+                scale_y=scale_y,
+                distance_units=distance_units,
             )
 
-            if self.color_combo.currentText() == "White Only":
-                colors = ['white'] * len(highlight_values)
-            else:
-                highlight_colors = ['white', 'black', 'red', 'yellow', 'green', 'cyan']
-                colors = [highlight_colors[i % len(highlight_colors)] for i in range(len(highlight_values))]
+        # --- Build coordinate grid consistent with DraggableCanvas offsets ---
+        
+        image = base_img.toImage().convertToFormat(QImage.Format.Format_RGBA8888)
+        width, height = image.width(), image.height()
+        extent = [-width / 2, width / 2, -height / 2, height / 2]
 
-            legend_handles = []
-            for i, value in enumerate(highlight_values):
-                contour = self.plot_canvas.ax.contour(
-                    final_intensity, levels=[value], colors=[colors[i]], linewidths=2
-                )
-                self.plot_canvas.ax.clabel(contour, inline=True, fmt=f'{value}', fontsize=10)
-                line = mlines.Line2D([], [], color=colors[i], linewidth=2, label=f'{value}')
-                legend_handles.append(line)
+        rows, cols = final_intensity.shape
+        X = np.linspace(
+            extent[0] + self.plot_canvas.intensity_offset_x,
+            extent[1] + self.plot_canvas.intensity_offset_x,
+            cols,
+        )
+        Y = np.linspace(
+            extent[2] + self.plot_canvas.intensity_offset_y,
+            extent[3] + self.plot_canvas.intensity_offset_y,
+            rows,
+        )
+        xx, yy = np.meshgrid(X, Y)
 
-            if legend_handles:
-                self.plot_canvas.ax.legend(handles=legend_handles, loc='best')
+        # Match the flip used in draw_contours
+        intensity_for_contour = np.flipud(final_intensity)
 
-            self.plot_canvas.draw()
+        # --- Choose colors for highlight lines ---
+        if self.color_combo.currentText() == "White Only":
+            colors = ["white"] * len(highlight_values)
+        else:
+            base_colors = ["white", "black", "red", "yellow", "green", "cyan"]
+            colors = [base_colors[i % len(base_colors)] for i in range(len(highlight_values))]
 
-        except ValueError as e:
-            QMessageBox.warning(self, "Warning",
-                                f"Invalid highlight values: {str(e)}\nPlease enter comma-separated numbers.")
+        legend_handles = []
+
+        for i, value in enumerate(highlight_values):
+            cs = self.plot_canvas.ax.contour(
+                xx,
+                yy,
+                intensity_for_contour,
+                levels=[value],
+                colors=[colors[i]],
+                linewidths=2,
+            )
+            # Label the lines with the numeric level
+            self.plot_canvas.ax.clabel(cs, inline=True, fmt=f"{value}", fontsize=10)
+
+            line = mlines.Line2D([], [], color=colors[i], linewidth=2, label=f"{value}")
+            legend_handles.append(line)
+
+        if legend_handles:
+            self.plot_canvas.ax.legend(handles=legend_handles, loc="best")
+
+        self.plot_canvas.draw()
 
     def apply_units_and_scale(self):
 
@@ -1290,7 +1416,7 @@ class MainWindow(QMainWindow):
 
             if hasattr(self, '_current_vis_mode') and self._current_vis_mode == "contour":
                 self.plot_canvas.draw_contours(
-                    self.get_rotated_background_pixmap(),  # FIXED: was self.original_pixmap
+                    self.get_rotated_background_pixmap(),  
                     final_intensity,
                     alpha=self.alpha, cmap=self.cmap,
                     levels=np.linspace(self.vmin_spin.value(), self.vmax_spin.value(), 20),
@@ -1299,7 +1425,7 @@ class MainWindow(QMainWindow):
                 )
             else:
                 self.plot_canvas.draw_heatmap(
-                    self.get_rotated_background_pixmap(),  # FIXED: was self.original_pixmap
+                    self.get_rotated_background_pixmap(),  
                     final_intensity,
                     alpha=self.alpha, cmap=self.cmap,
                     vmin=self.vmin_spin.value(), vmax=self.vmax_spin.value(),
@@ -1461,4 +1587,3 @@ if __name__ == "__main__":
     window = MainWindow()
     window.show()
     sys.exit(app.exec())
-
