@@ -1,10 +1,3 @@
-"""
-Radiation Protection Scatter Map Generator
--------------------------------------------
-A PyQt6 + Matplotlib GUI for overlaying radiation intensity data
-onto floor-plan images or PDFs.
-
-"""
 
 import sys
 import gc
@@ -130,7 +123,7 @@ def _get_pil():
 # ---------------------------------------------------------------------------
 # Images larger than this (on either axis) are downscaled on load to prevent
 # out-of-memory crashes, especially with HEIC photos from modern phones
-#  The original aspect ratio is preserved.
+# .  The original aspect ratio is preserved.
 
 MAX_IMAGE_DIMENSION = 4096  # pixels
 
@@ -240,13 +233,7 @@ def _resolve_cmap(name_or_obj):
 
 
 def _pixmap_to_rgb_array(pixmap: QPixmap) -> np.ndarray:
-    """Convert a QPixmap to an (H, W, 3) uint8 NumPy array (RGB).
 
-    The returned array owns its own memory (contiguous copy) so it
-    does **not** depend on the QImage staying alive.  This prevents
-    segfaults when Python's GC collects the temporary QImage while
-    NumPy still holds a pointer to its internal buffer.
-    """
     image = pixmap.toImage().convertToFormat(QImage.Format.Format_RGB888)
     w, h = image.width(), image.height()
     if w == 0 or h == 0:
@@ -265,15 +252,7 @@ def _pixmap_to_rgb_array(pixmap: QPixmap) -> np.ndarray:
 
 
 def _safe_load_raster_image(file_path: str) -> QPixmap | None:
-    """Load a raster image (PNG/JPG/BMP, etc.) via Pillow and downscale
-    before converting to QPixmap, to avoid large intermediate buffers.
 
-    The PIL image is downscaled *before* extracting raw bytes, and the
-    QImage is ``.copy()``'d to decouple it from the Python ``data``
-    buffer before returning.  Both ``data`` and ``pil_img`` are kept
-    alive until after the copy to prevent an access-violation on
-    Windows when the GC races the copy.
-    """
     try:
         Image = _get_pil()
         pil_img = Image.open(file_path)
@@ -302,15 +281,7 @@ def _safe_load_raster_image(file_path: str) -> QPixmap | None:
 
 
 def _try_load_heic(file_path: str):
-    """Attempt to open a HEIC / HEIF file via pillow-heif.
 
-    Returns a QPixmap on success or None if the library is unavailable
-    or the file cannot be read.
-
-    Large images are downscaled *in PIL* before creating the QImage to
-    avoid a memory spike (or access-violation crash on Windows) that can
-    occur when converting multi-megapixel HEIC photos to raw RGBA bytes.
-    """
     try:
         import pillow_heif
         pillow_heif.register_heif_opener()
@@ -342,24 +313,11 @@ def _try_load_heic(file_path: str):
 
 
 # ---------------------------------------------------------------------------
-# AnnotatedImageWidget – custom drawing canvas for the Image tab
+# AnnotatedImageWidget 
 # ---------------------------------------------------------------------------
 
 class AnnotatedImageWidget(QWidget):
-    """Widget that displays a QPixmap and supports interactive annotations.
 
-    Supported annotation modes (set via ``set_mode``):
-      * MODE_MARKER   – numbered point markers (with fill toggle)
-      * MODE_LINE     – straight line segments (click start, click end)
-      * MODE_FREEDRAW – free-hand polylines (press-drag-release)
-      * MODE_TEXT     – click to place a text label
-      * MODE_SCALE    – draw a line, then enter known distance (ImageJ-style)
-      * MODE_ICON     – click to place a loaded icon image
-
-    All annotation coordinates are stored in *image* space so they
-    survive widget resizing and can later be mapped to Matplotlib data
-    coordinates for overlay integration.
-    """
 
     MODE_NONE = "none"
     MODE_MARKER = "marker"
@@ -717,14 +675,7 @@ class AnnotatedImageWidget(QWidget):
         return layer
 
     def import_annotations_layer(self, layer_pixmap: 'QPixmap') -> bool:
-        """Composite a transparent annotation layer onto the current image.
 
-        *layer_pixmap* should be a RGBA PNG (the same size as the original
-        image, as produced by ``export_annotations_layer``).  If it has a
-        different size it is scaled to fit.
-
-        Returns True on success.
-        """
         if self._pixmap is None:
             return False
         if layer_pixmap.isNull():
@@ -1149,12 +1100,12 @@ class DraggableCanvas(FigureCanvasQTAgg):
 
     def mouseReleaseEvent(self, event):
         """After drag, re-apply highlights so contour lines + labels
-        stay consistent with the moved overlay."""
+        stay consistent with the moved overlay"""
         if event.button() == Qt.MouseButton.LeftButton:
             self.dragging = False
             self.last_mouse_pos = None
 
-            # Re-apply highlights after drag if any were set 
+            # Re-apply highlights after drag if any were set (Option 1 behaviour)
             try:
                 if (
                     hasattr(self, "parent_window")
@@ -2234,7 +2185,7 @@ class MainWindow(QMainWindow):
         self.update_display()
 
     # -------------------------------------------------------------------
-    # Background-pixmap cache  (avoids re-rotating on every draw call)
+    # Background-pixmap cache  
     # -------------------------------------------------------------------
 
     def _invalidate_bg_cache(self):
@@ -2401,7 +2352,6 @@ class MainWindow(QMainWindow):
         self.set_grid_spinboxes_from_data()
 
     def define_crop_area(self):
-        """Enter visual crop mode — the user draws a rectangle on the image."""
         if not self.original_pixmap:
             QMessageBox.warning(self, "Warning", "Load an image first.")
             return
@@ -2552,9 +2502,6 @@ class MainWindow(QMainWindow):
 
         vmin, vmax = float(np.min(valid_data)), float(np.max(valid_data))
 
-        # Block signals while bulk-updating range and value to prevent
-        # cascading redraws (the old default range of 0-99.99 would clamp
-        # large data values, triggering valueChanged in a feedback loop).
         self.vmin_spin.blockSignals(True)
         self.vmax_spin.blockSignals(True)
         self.vmin_spin.setRange(vmin, vmax)
@@ -2600,7 +2547,7 @@ class MainWindow(QMainWindow):
         self._current_vis_mode = "contour"
 
     # -------------------------------------------------------------------
-    # Cache invalidation  (no gc.collect here – only lightweight)
+    # Cache invalidation  
     # -------------------------------------------------------------------
 
     def invalidate_cache(self):
@@ -2611,7 +2558,7 @@ class MainWindow(QMainWindow):
         self.last_pixmap_size = None
 
     # -------------------------------------------------------------------
-    # Intensity preview  (enhanced with image background)
+    # Intensity preview 
     # -------------------------------------------------------------------
 
     def update_intensity_preview(self):
@@ -2958,17 +2905,12 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Error", f"Invalid input: {str(e)}")
 
     # -------------------------------------------------------------------
-    # Highlight levels  
+    # Highlight levels 
     # -------------------------------------------------------------------
 
     def apply_highlights(self):
         """Draw highlight contour lines and labels at specified dose values.
 
-        Called from the UI button and also from DraggableCanvas.mouseReleaseEvent
-        after a drag .  The base heatmap/contour is
-        re-drawn first, then the highlight contours are added on top so
-        both contour lines and labels are recomputed at the correct
-        (potentially dragged) position.
         """
         if not self.original_pixmap or self.table_widget.rowCount() == 0:
             QMessageBox.warning(self, "Warning", "Load an image and some intensity data first.")
@@ -3112,29 +3054,18 @@ class MainWindow(QMainWindow):
     # Save blended image
     # -------------------------------------------------------------------
 
-    # ===================================================================
-    # UNIFIED EXPORT PIPELINE
-    # ===================================================================
-
     def save_blended_image(self):
-        """Unified export: works for raster images AND PDF sources,
-        correctly respecting crop, rotation, highlights, and drag offset.
-
-        For PDF sources at high DPI the original PDF is re-rendered at
-        the target resolution (within ``_MAX_EXPORT_PIXELS``).  For raster
-        sources the screen-resolution background is used.
-
-        A temporary Figure is created so the on-screen plot is never
-        disturbed.
+        """Save the Blended-tab figure exactly as the user sees it.
         """
-        if not self.plot_canvas.figure or self.original_pixmap is None:
+        fig = self.plot_canvas.figure
+        if fig is None or self.original_pixmap is None:
             return
 
         dpi = self.dpi_spin.value()
         width_inches = self.width_spin.value()
         height_inches = self.height_spin.value()
 
-        # --- Ask for save path first (free to cancel) ---
+        # --- Ask for save path first ---
         file_name, _ = QFileDialog.getSaveFileName(
             self, "Save Blended Image", "",
             "PNG Files (*.png);;JPEG Files (*.jpg *.jpeg);;SVG Files (*.svg);;"
@@ -3143,202 +3074,32 @@ class MainWindow(QMainWindow):
         if not file_name:
             return
 
+        # Snapshot the current figure state so we can restore it after save
+        orig_size = fig.get_size_inches().copy()
+        orig_dpi = fig.get_dpi()
+
         try:
-            bg_pixmap = self._get_export_background(dpi)
-            self._export_figure(
-                bg_pixmap, dpi, width_inches, height_inches, file_name
-            )
+            fig.set_size_inches(width_inches, height_inches)
+            fig.set_dpi(dpi)
+
+            ext = os.path.splitext(file_name)[1].lower().lstrip('.')
+            if ext in ('svg', 'pdf'):
+                fig.savefig(file_name, format=ext,
+                            bbox_inches='tight')
+            else:
+                fig.savefig(file_name, dpi=dpi,
+                            bbox_inches='tight',
+                            transparent=(ext == 'png'))
+
+            QMessageBox.information(
+                self, 'Saved', f'Blended image saved to:\n{file_name}')
         except Exception as e:
             QMessageBox.warning(self, "Export error", f"Export failed:\n{e}")
-
-    def _get_export_background(self, dpi: int) -> QPixmap:
-        """Return the background pixmap for export, with crop + rotation.
-
-        For PDF sources whose *dpi* exceeds the screen render, the
-        original PDF is re-rendered at the requested DPI.  Otherwise
-        the on-screen ``get_rotated_background_pixmap()`` is reused.
-        """
-        use_pdf_rerender = (
-            getattr(self, "source_type", None) == "pdf"
-            and getattr(self, "screen_dpi", None) is not None
-            and dpi > self.screen_dpi
-            and self.source_path
-        )
-
-        if not use_pdf_rerender:
-            # Raster source (or PDF at screen-DPI) – already cropped/rotated
-            return self.get_rotated_background_pixmap()
-
-        # --- Re-render PDF at high DPI, then apply crop + rotation ---
-        fitz = _get_fitz()
-        doc = fitz.open(self.source_path)
-        if doc.page_count == 0:
-            doc.close()
-            return self.get_rotated_background_pixmap()  # fallback
-
-        page = doc.load_page(0)
-        page_rect = page.rect  # points (1/72 in)
-
-        page_w_in = page_rect.width / 72.0
-        page_h_in = page_rect.height / 72.0
-        if page_w_in <= 0 or page_h_in <= 0:
-            doc.close()
-            return self.get_rotated_background_pixmap()
-
-        # Desired pixels capped to prevent OOM
-        target_w = min(int(page_w_in * dpi), self._MAX_EXPORT_PIXELS)
-        target_h = min(int(page_h_in * dpi), self._MAX_EXPORT_PIXELS)
-        scale = min(target_w / page_rect.width, target_h / page_rect.height)
-
-        pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale))
-        fmt = (QImage.Format.Format_RGBA8888 if pix.alpha
-               else QImage.Format.Format_RGB888)
-        qimg = QImage(pix.samples, pix.width, pix.height,
-                      pix.stride, fmt).copy()
-        full_pm = QPixmap.fromImage(qimg)
-        doc.close()
-        del pix, qimg
-
-        # Work out scale factor between the high-res render and the
-        # original screen-resolution pixmap so we can translate the
-        # crop rect.
-        orig_w = self.original_pixmap.width()
-        orig_h = self.original_pixmap.height()
-        sx = full_pm.width()  / orig_w if orig_w > 0 else 1.0
-        sy = full_pm.height() / orig_h if orig_h > 0 else 1.0
-
-        # Apply crop (scaled up to high-res coordinates)
-        if self.crop_rect:
-            cr = self.crop_rect
-            hi_crop = QRect(
-                int(cr.x() * sx), int(cr.y() * sy),
-                int(cr.width() * sx), int(cr.height() * sy),
-            )
-            full_pm = full_pm.copy(hi_crop)
-
-        # Apply rotation
-        if self.current_rotation_angle:
-            t = QTransform().rotate(self.current_rotation_angle)
-            full_pm = full_pm.transformed(
-                t, Qt.TransformationMode.SmoothTransformation)
-
-        return full_pm
-
-    def _export_figure(
-        self,
-        bg_pixmap: QPixmap,
-        dpi: int,
-        width_inches: float,
-        height_inches: float,
-        save_path: str,
-    ):
-        """Build a temporary Matplotlib Figure that mirrors the on-screen
-        Blended-tab view and save it to *save_path*.
-
-        This is the single code path for every blended export (raster,
-        PDF, any DPI, with or without crop/rotation/highlights).
-        """
-        export_fig = Figure(dpi=dpi)
-        export_fig.set_size_inches(width_inches, height_inches)
-        ax = export_fig.add_subplot(111)
-
-        # --- Background ---
-        arr_rgb = _pixmap_to_rgb_array(bg_pixmap)
-        h, w = arr_rgb.shape[:2]
-        extent = [-w / 2, w / 2, -h / 2, h / 2]
-        ax.imshow(arr_rgb, extent=extent, origin='upper', aspect='equal')
-        del arr_rgb
-
-        # --- Intensity overlay (heatmap or contour) ---
-        final_intensity = self.get_final_intensity_array()
-        if final_intensity is not None:
-            # Drag offset from the live canvas
-            dx = getattr(self.plot_canvas, 'intensity_offset_x', 0.0)
-            dy = getattr(self.plot_canvas, 'intensity_offset_y', 0.0)
-            ie = [extent[0] + dx, extent[1] + dx,
-                  extent[2] + dy, extent[3] + dy]
-
-            vmin = float(self.vmin_spin.value())
-            vmax = float(self.vmax_spin.value())
-            cmap_obj = _resolve_cmap(self.cmap)
-            mode = getattr(self, '_current_vis_mode', 'heatmap')
-
-            if mode == 'contour':
-                rows, cols = final_intensity.shape
-                X = np.linspace(ie[0], ie[1], cols)
-                Y = np.linspace(ie[2], ie[3], rows)
-                xx, yy = np.meshgrid(X, Y)
-                cs = ax.contourf(
-                    xx, yy, np.flipud(final_intensity),
-                    levels=7, cmap=cmap_obj, alpha=self.alpha, extend='max',
-                )
-                cbar = export_fig.colorbar(
-                    cs, ax=ax, orientation='vertical', pad=0.05)
-            else:
-                cmap_obj.set_over(cmap_obj(1.0))
-                top_c = list(cmap_obj(1.0)); top_c[3] = 1.0
-                cmap_obj.set_over(tuple(top_c))
-                cmap_obj.set_under((0, 0, 0, 0))
-                im = ax.imshow(
-                    final_intensity, cmap=cmap_obj, alpha=self.alpha,
-                    interpolation='bilinear', extent=ie, origin='upper',
-                    vmin=vmin, vmax=vmax,
-                )
-                cbar = export_fig.colorbar(
-                    im, ax=ax, orientation='vertical', pad=0.05, extend='max')
-
-            intensity_units = self.intensity_unit_input.text()
-            cbar_label = (f'Intensity ({intensity_units})'
-                          if intensity_units else 'Intensity')
-            cbar.set_label(cbar_label, rotation=270, labelpad=20,
-                           fontsize=15, fontweight='bold')
-
-            # --- Highlights (if active) ---
-            highlight_values = getattr(self, 'last_highlight_values', [])
-            if highlight_values:
-                color_mode = getattr(self, 'last_highlight_color_mode', 'White')
-                rows, cols = final_intensity.shape
-                X = np.linspace(ie[0], ie[1], cols)
-                Y = np.linspace(ie[2], ie[3], rows)
-                xx, yy = np.meshgrid(X, Y)
-                flipped = np.flipud(final_intensity)
-                for val in highlight_values:
-                    lc = 'white' if color_mode == 'White' else 'black'
-                    cs_h = ax.contour(
-                        xx, yy, flipped, levels=[val],
-                        colors=[lc], linewidths=2,
-                    )
-                    ax.clabel(cs_h, inline=True, fontsize=12, fmt=f'{{:.1f}}')
-
-        # --- Fix axis limits to match the background exactly ---
-        ax.set_xlim(extent[0], extent[1])
-        ax.set_ylim(extent[2], extent[3])
-
-        # Axis labels
-        distance_units = self.scale_unit_input.text()
-        scale_x = float(self.scale_x_input.text()) if self.scale_x_input.text() else 1.0
-        scale_y = float(self.scale_y_input.text()) if self.scale_y_input.text() else 1.0
-        if scale_x != 1.0 or scale_y != 1.0:
-            x_ticks = ax.get_xticks()
-            y_ticks = ax.get_yticks()
-            ax.set_xticklabels([f'{t * scale_x:.0f}' for t in x_ticks])
-            ax.set_yticklabels([f'{t * scale_y:.0f}' for t in y_ticks])
-        ax.set_xlabel(f'Distance ({distance_units})', fontsize=15, fontweight='bold')
-        ax.set_ylabel(f'Distance ({distance_units})', fontsize=15, fontweight='bold')
-
-        # --- Save ---
-        ext = os.path.splitext(save_path)[1].lower().lstrip('.')
-        if ext in ('svg', 'pdf'):
-            export_fig.savefig(save_path, bbox_inches='tight', format=ext)
-        else:
-            export_fig.savefig(
-                save_path, dpi=dpi, bbox_inches='tight',
-                transparent=(ext == 'png'),
-            )
-
-        plt.close(export_fig)
-        QMessageBox.information(
-            self, 'Saved', f'Blended image saved to:\n{save_path}')
+        finally:
+            # Always restore the live figure to its on-screen state
+            fig.set_size_inches(orig_size)
+            fig.set_dpi(orig_dpi)
+            self.plot_canvas.draw_idle()
 
     # -------------------------------------------------------------------
     # Grid overlay
@@ -3352,21 +3113,26 @@ class MainWindow(QMainWindow):
             self, "Save Grid Image", "",
             "PNG Files (*.png);;JPEG Files (*.jpg *.jpeg);;All Files (*)"
         )
+        if not file_name:
+            return
 
-        if file_name:
-            # Use the rotated/cropped background size (matches what's drawn)
-            bg = self.get_rotated_background_pixmap()
-            dpi = self.grid_canvas.figure.get_dpi()
-            width = bg.width() / dpi
-            height = bg.height() / dpi
-            self.grid_canvas.figure.set_size_inches(width, height)
+        fig = self.grid_canvas.figure
+        dpi = self.dpi_spin.value()
+        orig_size = fig.get_size_inches().copy()
+        orig_dpi = fig.get_dpi()
 
-            use_transparency = not (file_name.lower().endswith('.jpg') or file_name.lower().endswith('.jpeg'))
-
-            self.grid_canvas.figure.savefig(
+        try:
+            fig.set_size_inches(self.width_spin.value(), self.height_spin.value())
+            fig.set_dpi(dpi)
+            use_transparency = not file_name.lower().endswith(('.jpg', '.jpeg'))
+            fig.savefig(
                 file_name, dpi=dpi, bbox_inches='tight',
                 pad_inches=0, transparent=use_transparency
             )
+        finally:
+            fig.set_size_inches(orig_size)
+            fig.set_dpi(orig_dpi)
+            self.grid_canvas.draw_idle()
 
     def show_grid_overlay(self):
         if not self.original_pixmap:
@@ -3416,7 +3182,7 @@ class MainWindow(QMainWindow):
         texts = [(pt.x(), pt.y(), txt) for pt, txt in self.image_canvas.get_texts()]
         return {'markers': markers, 'lines': lines, 'free_draw': free_draw, 'texts': texts}
 
-    _MAX_EXPORT_PIXELS = 8192  # hard cap per axis for high-res PDF export
+
 
     # -------------------------------------------------------------------
     # Session save / restore  (JSON project file)
